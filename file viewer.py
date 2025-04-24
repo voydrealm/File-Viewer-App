@@ -3,13 +3,13 @@ import os
 import shutil
 import time
 import random
-import datetime
 import json
 from PyQt5.QtWidgets import QFileDialog
-import shutil
+import shutil   
 from PyQt5.QtWidgets import (QInputDialog, QMenu, QAction, QMessageBox, QSizePolicy,
     QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QFileDialog, QMessageBox, QCheckBox, QSplitter, QComboBox, QFrame, QMenuBar, QMenu
+    QPushButton, QFileDialog, QMessageBox, QCheckBox, QSplitter, QComboBox, QFrame, QMenuBar, QMenu,
+    QSlider
 )
 from PyQt5.QtCore import QTimer
 import subprocess
@@ -19,21 +19,9 @@ from PyQt5.QtCore import Qt, QUrl
 import ctypes
 
 
-# === Asset Paths === #
-BASE_DIR = os.path.dirname(__file__)
-ASSET_DIR = os.path.join(BASE_DIR, "assets")
-CONFIG_DIR = os.path.join(ASSET_DIR, "config")
-PLAYLIST_DIR = os.path.join(ASSET_DIR, "playlists")
-
-# Ensure folders exist
-os.makedirs(CONFIG_DIR, exist_ok=True)
-os.makedirs(PLAYLIST_DIR, exist_ok=True)
-
-# File paths
-CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
-KEYBINDS_FILE = os.path.join(CONFIG_DIR, "keybinds.json")
-FAV_FILE = os.path.join(PLAYLIST_DIR, "favorites.json")
-
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+PREF_FILE = os.path.join(APP_DIR, "preferences.json")
+PLAYLIST_DIR = os.path.join(APP_DIR, "playlists")
 
 
 
@@ -47,7 +35,7 @@ ctypes.CDLL(libvlc_path)
 import vlc
 
 
-#CONFIG_FILE = "file_viewer_config.json"
+CONFIG_FILE = "file_viewer_config.json"
 
 IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.bmp']
 VIDEO_EXTENSIONS = ['.mp4', '.avi', '.mov', '.mkv']
@@ -71,7 +59,8 @@ class FileViewer(QWidget):
         self.files = []
         self.all_files = []
         self.current_index = 0
-        
+        self.fullscreen = False
+
         self.setWindowTitle("File Viewer")
         self.setGeometry(100, 100, 1000, 600)
 
@@ -98,9 +87,6 @@ class FileViewer(QWidget):
         self.toast_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         
 
-
-
-
         self.main_layout = QHBoxLayout()
         self.outer_layout.addLayout(self.main_layout)
         
@@ -108,19 +94,30 @@ class FileViewer(QWidget):
         # Display Panel
         self.display_panel = QFrame()
         self.display_panel.setFrameShape(QFrame.StyledPanel)
+        self.playback_slider = QSlider(Qt.Horizontal, self.display_panel)
         self.display_layout = QVBoxLayout(self.display_panel)
-        self.display_panel.mousePressEvent = self.handle_image_click
         
+        self.display_layout.addWidget(self.playback_slider)
+
+        
+        self.playback_slider.setRange(0, 1000)
+        self.playback_slider.setVisible(False)
+        self.playback_slider.sliderPressed.connect(self.pause_video_for_scrub)
+        self.playback_slider.sliderReleased.connect(self.scrub_video)
+
+        self.playback_timer = QTimer()
+        self.playback_timer.timeout.connect(self.update_playback_slider)
+
 
         self.label = QLabel("Click to select folder", self.display_panel)
         self.label.setAlignment(Qt.AlignCenter)
-        #self.label.setStyleSheet("QLabel { background-color: #333; color: #fff; font-size: 18px; }")
+        self.label.setStyleSheet("QLabel { background-color: #333; color: #fff; font-size: 18px; }")
         self.label.setScaledContents(False)
 
         
 
         self.path_label = QLabel("", self.display_panel)
-        #self.path_label.setStyleSheet("QLabel { color: #999; font-size: 11px; }")
+        self.path_label.setStyleSheet("QLabel { color: #999; font-size: 11px; }")
         self.path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         self.display_layout.addWidget(self.path_label)
@@ -146,7 +143,7 @@ class FileViewer(QWidget):
         # Video frame for VLC
         self.video_widget = QFrame()
         self.video_widget.setFrameShape(QFrame.StyledPanel)
-        #self.video_widget.setStyleSheet("background-color: black;")
+        self.video_widget.setStyleSheet("background-color: black;")
         self.video_widget.hide()
 
         self.display_layout.addWidget(self.label)
@@ -163,7 +160,6 @@ class FileViewer(QWidget):
         self.menu_bar.addMenu(self.controls_menu)
 
         self.playlist_dropdown = QComboBox()
-        self.playlist_dropdown.setFocusPolicy(Qt.NoFocus)
         self.playlist_dropdown.view().setContextMenuPolicy(Qt.CustomContextMenu)
         self.playlist_dropdown.view().customContextMenuRequested.connect(self.show_playlist_context_menu)
 
@@ -190,10 +186,8 @@ class FileViewer(QWidget):
         #file list
 
         self.file_list = FileListWidget()
-        self.file_list.setFocus()
 
-
-        self.file_list.setFocusPolicy(Qt.NoFocus)
+        #self.file_list.setFocusPolicy(Qt.NoFocus)
         self.file_list.setMinimumWidth(300)
         self.file_list.setMaximumWidth(500)
         self.file_list.itemClicked.connect(self.file_list_clicked)
@@ -202,7 +196,6 @@ class FileViewer(QWidget):
         self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.file_list.customContextMenuRequested.connect(self.show_file_list_context_menu)
         self.sort_combo = QComboBox()
-        self.sort_combo.setFocusPolicy(Qt.NoFocus)
         self.sort_combo.addItems([
             "Sort by Name (Asc)", "Sort by Name (Desc)",
             "Sort by Date (Asc)", "Sort by Date (Desc)",
@@ -213,22 +206,18 @@ class FileViewer(QWidget):
 
                 # Create a dropdown menu for checkboxes and sort combo
         self.filter_menu = QMenu("Filters", self)
-        self.filter_menu.setFocusPolicy(Qt.NoFocus)
 
         self.img_checkbox = QCheckBox("Images")
         self.img_checkbox.setChecked(True)
         self.img_checkbox.stateChanged.connect(self.refresh_files)
-        self.img_checkbox.setFocusPolicy(Qt.NoFocus)
 
         self.vid_checkbox = QCheckBox("Videos")
         self.vid_checkbox.setChecked(True)
         self.vid_checkbox.stateChanged.connect(self.refresh_files)
-        self.vid_checkbox.setFocusPolicy(Qt.NoFocus)
 
         self.gif_checkbox = QCheckBox("GIFs")
         self.gif_checkbox.setChecked(True)
         self.gif_checkbox.stateChanged.connect(self.refresh_files)
-        self.gif_checkbox.setFocusPolicy(Qt.NoFocus)
 
         # Add checkboxes and sort combo to filter menu
         self.filter_menu.addAction("Images").setCheckable(True)
@@ -278,25 +267,53 @@ class FileViewer(QWidget):
         self.load_all_files()
         self.refresh_playlist_dropdown()
         self.load_preferences()
-        self.load_config()
         self.current_playlist = None
 
 
 ############################################################################################
 
 
-    def save_config(self):
-        config = {
-            'source_dir': self.source_dir,
-            'dest_dir': self.dest_dir,
-            'filters': {
-                'images': self.img_checkbox.isChecked(),
-                'videos': self.vid_checkbox.isChecked(),
-                'gifs': self.gif_checkbox.isChecked()
-            }
-        }
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(config, f)
+    def update_playback_slider(self):
+        if self.vlc_player.is_playing():
+            duration = self.vlc_player.get_length()
+            current = self.vlc_player.get_time()
+            if duration > 0:
+                position = int((current / duration) * 1000)
+                self.playback_slider.blockSignals(True)
+                self.playback_slider.setValue(position)
+                self.playback_slider.blockSignals(False)
+
+
+    def pause_video_for_scrub(self):
+        if self.vlc_player.is_playing():
+            self.vlc_player.pause()
+
+    def scrub_video(self):
+        duration = self.vlc_player.get_length()
+        if duration > 0:
+            new_time = int((self.playback_slider.value() / 1000) * duration)
+            self.vlc_player.set_time(new_time)
+            self.vlc_player.play()
+
+
+    def toggle_fullscreen(self):
+        if self.fullscreen:
+            self.showNormal()
+            self.fullscreen = False
+        else:
+            self.showFullScreen()
+            self.fullscreen = True
+
+    def toggle_fullscreen(self):
+        if self.fullscreen:
+            self.showNormal()
+            self.playlist_panel.show()
+            self.fullscreen = False
+        else:
+            self.showFullScreen()
+            self.playlist_panel.hide()
+            self.fullscreen = True
+
 
 
     def play_random_folder(self):
@@ -315,7 +332,7 @@ class FileViewer(QWidget):
             return
 
         selected_folder = random.choice(all_folders)
-        #print("Selected random folder:", selected_folder)
+        print("Selected random folder:", selected_folder)
 
         collected_files = []
         for root, _, files in os.walk(selected_folder):
@@ -324,7 +341,7 @@ class FileViewer(QWidget):
                 if ext in IMAGE_EXTENSIONS + VIDEO_EXTENSIONS + GIF_EXTENSIONS:
                     collected_files.append(os.path.join(root, file))
 
-        #print("Files found:", len(collected_files))
+        print("Files found:", len(collected_files))
 
         if not collected_files:
             QMessageBox.information(self, "No Files", "No supported files in selected folder.")
@@ -365,7 +382,7 @@ class FileViewer(QWidget):
 
         removed = 0
         for abs_path in selected_files:
-            rel_path = os.path.relpath(abs_path, BASE_DIR)
+            rel_path = os.path.relpath(abs_path, APP_DIR)
             if rel_path in playlist:
                 playlist.remove(rel_path)
                 removed += 1
@@ -380,6 +397,7 @@ class FileViewer(QWidget):
         if not selected_files:
             return
 
+        # Prompt for playlist if none set
         if not hasattr(self, 'dest_playlist') or not self.dest_playlist:
             if not os.path.isdir(PLAYLIST_DIR):
                 if os.path.exists(PLAYLIST_DIR):
@@ -405,6 +423,7 @@ class FileViewer(QWidget):
 
         playlist_file = self.get_playlist_path(self.dest_playlist)
 
+        # Load or initialize the playlist
         if os.path.exists(playlist_file):
             with open(playlist_file, 'r') as f:
                 playlist = json.load(f)
@@ -412,28 +431,17 @@ class FileViewer(QWidget):
             playlist = []
 
         added = 0
-        existing_paths = {entry["original_path"] for entry in playlist if isinstance(entry, dict)}
-
         for abs_path in selected_files:
-            normalized_path = os.path.abspath(abs_path)
-            if normalized_path in existing_paths:
-                continue
-
-            entry = {
-                "file_name": os.path.basename(abs_path),
-                "original_path": normalized_path,
-                "last_known_dir": os.path.dirname(normalized_path),
-                "tags": [],
-                "notes": "",
-                "added_at": datetime.datetime.now().isoformat()
-            }
-            playlist.append(entry)
-            added += 1
+            rel_path = os.path.relpath(abs_path, APP_DIR)
+            if rel_path not in playlist:
+                playlist.append(rel_path)
+                added += 1
 
         with open(playlist_file, 'w') as f:
             json.dump(playlist, f, indent=2)
 
         QMessageBox.information(self, "Files Added", f"{added} file(s) added to '{self.dest_playlist}' playlist.")
+
 
     def show_file_list_context_menu(self, position):
         selected_items = self.file_list.selectedItems()
@@ -469,68 +477,34 @@ class FileViewer(QWidget):
     def normalize_playlist_name(self, name):
         return name.strip().lower().replace(" ", "_")
 
-    def handle_image_click(self, event):
-        width = self.display_panel.width()
-        click_x = event.pos().x()
-
-        #print(f"[Click] X: {click_x}, Width: {width}")
-
-        if not self.files:
-            #print("[Click] No files loaded.")
-            return
-
-        if click_x > width / 2:
-            #print("[Click] Right half → Next file")
-            self.current_index = (self.current_index + 1) % len(self.files)
-        else:
-            #print("[Click] Left half → Previous file")
-            self.current_index = (self.current_index - 1) % len(self.files)
-
-        self.show_file()
-        self.file_list.setCurrentRow(self.current_index)
-
-
-
-
 
     def load_preferences(self):
         default_prefs = {
-            "keybinds": {
-                "add_file_to_playlist": "Key_0",
-                "next_file": "Key_Down",
-                "previous_file": "Key_Up",
-                "seek_left": "Key_Left",
-                "seek_right": "Key_Right",
-                "move_to_folder": "Key_Period",
-                "play_random_folder": "Key_1"
-            },
-            "filters": {
-                "images": True,
-                "videos": True,
-                "gifs": True
-            }
+            "add_file_to_playlist": "Key_0",
+            "next_file": "Key_Down",
+            "previous_file": "Key_Up",
+            "seek_left": "Key_Left",
+            "seek_right": "Key_Right",
+            "move_to_folder": "Key_Period",
+            "play_random_folder": "Key_1",
+            "toggle_fullscreen": "Key_F"
+
+
+
         }
 
         try:
-            with open(KEYBINDS_FILE, "r") as f:
+            with open(PREF_FILE, "r") as f:
                 raw = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             raw = default_prefs
-            with open(KEYBINDS_FILE, "w") as f:
+            with open(PREF_FILE, "w") as f:
                 json.dump(raw, f, indent=2)
-
-        keybinds = raw.get("keybinds", default_prefs["keybinds"])
-        filters = raw.get("filters", default_prefs["filters"])
 
         self.preferences = {
             action: getattr(Qt, keyname, None)
-            for action, keyname in keybinds.items()
+            for action, keyname in raw.items()
         }
-
-        self.img_checkbox.setChecked(filters.get("images", True))
-        self.vid_checkbox.setChecked(filters.get("videos", True))
-        self.gif_checkbox.setChecked(filters.get("gifs", True))
-
 
 
 
@@ -666,7 +640,7 @@ class FileViewer(QWidget):
 
         self.files = []
         for rel_path in paths:
-            abs_path = os.path.normpath(os.path.join(BASE_DIR, rel_path))
+            abs_path = os.path.normpath(os.path.join(APP_DIR, rel_path))
             if os.path.exists(abs_path):
                 self.files.append(abs_path)
 
@@ -712,20 +686,23 @@ class FileViewer(QWidget):
 
 
     def keyPressEvent(self, event):
-        #print("Pressed:", event.key(), "| Pref:", self.preferences["add_file_to_playlist"])
+        print("Pressed:", event.key(), "| Pref:", self.preferences["add_file_to_playlist"])
         if not self.files:
             super().keyPressEvent(event)
             return
 
         key = event.key()
         prefs = self.preferences
-        full_path = os.path.relpath(self.files[self.current_index], BASE_DIR)
+        full_path = os.path.relpath(self.files[self.current_index], APP_DIR)
         _, ext = os.path.splitext(full_path.lower())
 
         if key == prefs["previous_file"]:
             self.current_index = (self.current_index - 1) % len(self.files)
             self.file_list.setCurrentRow(self.current_index)
             self.show_file()
+        
+        elif key == self.preferences.get("toggle_fullscreen", Qt.Key_F):
+            self.toggle_fullscreen()
 
         elif key == prefs["next_file"]:
             self.current_index = (self.current_index + 1) % len(self.files)
@@ -762,16 +739,10 @@ class FileViewer(QWidget):
         filename = os.path.basename(source_path)
         dest_path = os.path.join(self.move_target_folder, filename)
 
-        
-        if os.path.abspath(source_path) == os.path.abspath(dest_path):
-            self.show_toast("File is already in destination.")
-            return
-
-        # Clear display
-        #self.label.clear()
-        #self.label.setPixmap(QPixmap())
-        #self.label.setText("")
-        #self.video_widget.hide()
+        self.label.clear()
+        self.label.setPixmap(QPixmap())
+        self.label.setText("")
+        self.video_widget.hide()
 
         if self.vlc_player:
             self.vlc_player.stop()
@@ -802,6 +773,7 @@ class FileViewer(QWidget):
                 self.file_list.clear()
         except Exception as e:
             QMessageBox.warning(self, "Move Failed", f"Could not move file:\n{str(e)}")
+
 
 
 
@@ -917,35 +889,40 @@ class FileViewer(QWidget):
             return
 
         full_path = self.files[self.current_index]
-        self.path_label.setText(os.path.relpath(full_path, BASE_DIR))
+        self.path_label.setText(os.path.relpath(full_path, APP_DIR))
         _, ext = os.path.splitext(full_path.lower())
 
-        # Stop previous media
         if self.movie:
             self.movie.stop()
             self.movie = None
 
-        # Stop VLC video
         if self.vlc_player.is_playing():
             self.vlc_player.stop()
+
+        self.playback_timer.stop()
+        self.playback_slider.setVisible(False)
+        self.label.clear()
+        self.label.setPixmap(QPixmap())
+        self.label.setText("")
 
         display_area_width = self.display_panel.width()
         display_area_height = self.display_panel.height() - 50
 
         if ext in IMAGE_EXTENSIONS:
-            self.video_widget.hide()
             self.label.show()
+            self.video_widget.hide()
+
             pixmap = QPixmap(full_path)
             if pixmap.isNull():
                 self.label.setText(f"Cannot display: {os.path.basename(full_path)}")
-                self.label.setPixmap(QPixmap())
             else:
-                scaled_pixmap = pixmap.scaled(display_area_width, display_area_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.label.setPixmap(scaled_pixmap)
+                scaled = pixmap.scaled(display_area_width, display_area_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.label.setPixmap(scaled)
 
         elif ext in GIF_EXTENSIONS:
-            self.video_widget.hide()
             self.label.show()
+            self.video_widget.hide()
+
             self.movie = QMovie(full_path)
             self.movie.setCacheMode(QMovie.CacheAll)
             self.movie.setSpeed(100)
@@ -956,31 +933,26 @@ class FileViewer(QWidget):
             self.label.hide()
             self.video_widget.show()
 
-            # Stop VLC video if playing
-            if self.vlc_player.is_playing():
-                self.vlc_player.stop()
-
-            # Release current VLC player
+            self.vlc_player.stop()
             self.vlc_player.release()
-
-            # Recreate VLC player
             self.vlc_player = self.vlc_instance.media_player_new()
             self.vlc_player.set_hwnd(int(self.video_widget.winId()))
 
-            # Prepare new media
             media = self.vlc_instance.media_new(full_path)
-            media.add_option("input-repeat=65535")  # VLC max repeat count
-
-
-            # Set and play the media
+            media.add_option("input-repeat=65535")
             self.vlc_player.set_media(media)
             self.vlc_player.play()
+
+            self.playback_slider.setVisible(True)
+            self.playback_slider.setValue(0)
+            self.playback_timer.start(500)
 
         else:
             self.label.show()
             self.video_widget.hide()
-            self.label.setPixmap(QPixmap())
             self.label.setText(f"File: {os.path.basename(full_path)}")
+
+
 
 
     def add_file_to_playlist(self):
@@ -1010,7 +982,7 @@ class FileViewer(QWidget):
             self.dest_playlist = self.normalize_playlist_name(selected)
 
         # Add the file to the selected playlist
-        rel_path = os.path.relpath(self.files[self.current_index], BASE_DIR)
+        rel_path = os.path.relpath(self.files[self.current_index], APP_DIR)
         playlist_file = self.get_playlist_path(self.dest_playlist)
 
         if os.path.exists(playlist_file):
@@ -1056,6 +1028,7 @@ class FileViewer(QWidget):
             self.current_index = row
             self.show_file()
 
+    
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
