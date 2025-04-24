@@ -1,6 +1,6 @@
 # File Viewer
 
-A portable, keyboard-driven multimedia file viewer and playlist organizer written in Python using PyQt5 and VLC. Designed for USB use, the app works with portable file paths and supports rich navigation, file management, and playlist handling.
+A portable, keyboard-driven multimedia file viewer and playlist handler written in Python using PyQt5 and VLC. This app allows you to view and make playlists to sort files . Display, randomize, save and relocate files with customizable key binds. Moderately fast, lots of code, lots of bugs, but still useable and a good platform to build off of. Most of the code was generated using GPT 4o. Feel free to fork and build off of :)
 
 ---
 
