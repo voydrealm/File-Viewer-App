@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QInputDialog, QMenu, QAction, QMessageBox, QSizePol
     QSlider )
 from PyQt5.QtCore import QTimer
 import subprocess
-from PyQt5.QtGui import QPixmap, QMovie
+from PyQt5.QtGui import QPixmap, QMovie, QTransform
 from PyQt5.QtCore import QTimer
 from PyQt5.QtCore import Qt
 import ctypes
@@ -26,6 +26,8 @@ ASSETS_DIR = os.path.join(APP_DIR, "assets")
 PREF_FILE = os.path.join(ASSETS_DIR, "preferences.json")
 PLAYLIST_DIR = os.path.join(ASSETS_DIR, "playlists")
 os.makedirs(PLAYLIST_DIR, exist_ok=True)
+CONFIG_DIR = os.path.join(ASSETS_DIR, "config.json")
+FAVORITES_FILE = os.path.join(ASSETS_DIR, "favorites.json")
 
 
 # === VLC Setup === #
@@ -38,7 +40,7 @@ ctypes.CDLL(libvlc_path)
 import vlc
 
 
-CONFIG_FILE = "file_viewer_config.json"
+CONFIG_FILE = "config.json"
 IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.bmp']
 VIDEO_EXTENSIONS = ['.mp4', '.avi', '.mov', '.mkv']
 GIF_EXTENSIONS = ['.gif']
@@ -75,6 +77,10 @@ class FileViewer(QWidget):
         self.current_index = 0
         self.fullscreen = False
         self.current_sort_mode = "Random"  
+        self.rotation_angle = 0  # 0, 90, 180, 270
+        self.playlist_dir = PLAYLIST_DIR
+
+
 
         self.setWindowTitle("File Viewer")
         self.setGeometry(100, 100, 1000, 600)
@@ -143,8 +149,10 @@ class FileViewer(QWidget):
     '--no-video-title-show',
     '--no-snapshot-preview',
     '--quiet',
-    '--verbose=0'
-]
+    '--verbose=0',
+    '--avcodec-hw=none',
+    
+    ]
 
         self.vlc_instance = vlc.Instance(vlc_args)
         self.vlc_player = self.vlc_instance.media_player_new()
@@ -178,7 +186,14 @@ class FileViewer(QWidget):
         
         self.menu_bar.setCornerWidget(self.playlist_dropdown, Qt.TopRightCorner)
 
-        
+        load_fav_action = self.controls_menu.addAction("Load Favorite Folder")
+        load_fav_action.triggered.connect(self.load_favorite_folder)
+
+        save_fav_action = self.controls_menu.addAction("Save Current Folder as Favorite")
+        save_fav_action.triggered.connect(self.save_favorite_folder)
+
+        select_playlist_dir_action = self.controls_menu.addAction("Select Playlist Directory")
+        select_playlist_dir_action.triggered.connect(self.select_playlist_directory)
 
 
         # Menu actions
@@ -287,6 +302,60 @@ class FileViewer(QWidget):
         self.current_playlist = None
         
 ############################################################################################
+
+    def save_favorite_folder(self):
+        if not self.source_dir:
+            QMessageBox.warning(self, "No Source", "No source folder to save.")
+            return
+
+        name, ok = QInputDialog.getText(self, "Save Favorite", "Enter a name for this folder:")
+        if not ok or not name.strip():
+            return
+
+        try:
+            if os.path.exists(FAVORITES_FILE):
+                with open(FAVORITES_FILE, "r") as f:
+                    favorites = json.load(f)
+            else:
+                favorites = {}
+
+            favorites[name.strip()] = self.source_dir
+
+            with open(FAVORITES_FILE, "w") as f:
+                json.dump(favorites, f, indent=2)
+
+            QMessageBox.information(self, "Saved", f"Saved as favorite: {name.strip()}")
+
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not save favorite:\n{e}")
+
+    def load_favorite_folder(self):
+        if not os.path.exists(FAVORITES_FILE):
+            QMessageBox.information(self, "No Favorites", "No favorite folders saved yet.")
+            return
+
+        with open(FAVORITES_FILE, "r") as f:
+            favorites = json.load(f)
+
+        if not favorites:
+            QMessageBox.information(self, "No Favorites", "Favorites list is empty.")
+            return
+
+        names = list(favorites.keys())
+        selected, ok = QInputDialog.getItem(self, "Load Favorite", "Select a favorite folder:", names, 0, False)
+
+        if ok and selected:
+            folder = favorites[selected]
+            if os.path.exists(folder):
+                self.source_dir = folder
+                self.load_files_recursive()
+                self.update_window_title()
+                self.save_config()
+                if self.files:
+                    self.show_file()
+            else:
+                QMessageBox.warning(self, "Not Found", f"The folder '{folder}' no longer exists.")
+
 
 
     def update_playback_slider(self):
@@ -414,15 +483,15 @@ class FileViewer(QWidget):
 
         # Prompt for playlist if none set
         if not hasattr(self, 'dest_playlist') or not self.dest_playlist:
-            if not os.path.isdir(PLAYLIST_DIR):
-                if os.path.exists(PLAYLIST_DIR):
+            if not os.path.isdir(self.playlist_dir):
+                if os.path.exists(self.playlist_dir):
                     QMessageBox.warning(self, "Error", "'playlists' exists but is not a folder.")
                     return
-                os.makedirs(PLAYLIST_DIR)
+                os.makedirs(self.playlist_dir)
 
             playlists = [
                 f.replace("_playlist.json", "").replace("_", " ")
-                for f in os.listdir(PLAYLIST_DIR)
+                for f in os.listdir(self.playlist_dir)
                 if f.endswith("_playlist.json")
             ]
 
@@ -501,7 +570,7 @@ class FileViewer(QWidget):
 
     def get_playlist_path(self, name_or_label):
         base = self.normalize_playlist_name(name_or_label)
-        return os.path.join(PLAYLIST_DIR, f"{base}_playlist.json")
+        return os.path.join(self.playlist_dir, f"{base}_playlist.json")
 
     def normalize_playlist_name(self, name):
         return name.strip().lower().replace(" ", "_")
@@ -629,10 +698,10 @@ class FileViewer(QWidget):
 
         self.playlist_dropdown.addItem("All Files")
 
-        if not os.path.exists(PLAYLIST_DIR):
-            os.makedirs(PLAYLIST_DIR)
+        if not os.path.exists(self.playlist_dir):
+            os.makedirs(self.playlist_dir)
 
-        for file in sorted(os.listdir(PLAYLIST_DIR)):
+        for file in sorted(os.listdir(self.playlist_dir)):
             if file.endswith("_playlist.json"):
                 base = file.replace("_playlist.json", "")
                 label = base.replace("_", " ")
@@ -654,7 +723,7 @@ class FileViewer(QWidget):
                     json.dump([], f, indent=2)
 
             self.refresh_playlist_dropdown()
-            self.playlist_dropdown.setCurrentText(name.strip())
+            #self.playlist_dropdown.setCurrentText(name.strip())
 
     def load_playlist(self, name):
         playlist_path = self.get_playlist_path(name)
@@ -694,15 +763,15 @@ class FileViewer(QWidget):
 
 
     def select_destination_playlist(self):
-        if not os.path.isdir(PLAYLIST_DIR):
-            if os.path.exists(PLAYLIST_DIR):
+        if not os.path.isdir(self.playlist_dir):
+            if os.path.exists(self.playlist_dir):
                 QMessageBox.warning(self, "Error", "'playlists' exists but is not a folder.")
                 return
-            os.makedirs(PLAYLIST_DIR)
+            os.makedirs(self.playlist_dir)
 
         playlists = [
             f.replace("_playlist.json", "").replace("_", " ")
-            for f in os.listdir(PLAYLIST_DIR)
+            for f in os.listdir(self.playlist_dir)
             if f.endswith("_playlist.json")
         ]
 
@@ -743,11 +812,17 @@ class FileViewer(QWidget):
 
         elif key == prefs["seek_left"] and ext in VIDEO_EXTENSIONS:
             if self.vlc_player.is_playing():
-                self.vlc_player.set_time(max(0, self.vlc_player.get_time() - 5000))
+                current_time = self.vlc_player.get_time()
+                duration = self.vlc_player.get_length()
+                new_time = current_time - 5000
+                self.vlc_player.set_time(duration - 500 if new_time < 0 else new_time)
 
         elif key == prefs["seek_right"] and ext in VIDEO_EXTENSIONS:
             if self.vlc_player.is_playing():
-                self.vlc_player.set_time(self.vlc_player.get_time() + 5000)
+                current_time = self.vlc_player.get_time()
+                duration = self.vlc_player.get_length()
+                new_time = current_time + 5000
+                self.vlc_player.set_time(0 if new_time > duration else new_time)
 
         elif key == prefs["add_file_to_playlist"]:
             self.add_file_to_playlist()
@@ -767,7 +842,13 @@ class FileViewer(QWidget):
         elif event.key() == Qt.Key_Escape:
             self.close()
 
+        elif key == Qt.Key_Z:
+            self.rotation_angle = (self.rotation_angle - 90) % 360
+            self.apply_rotation()
 
+        elif key == Qt.Key_X:
+            self.rotation_angle = (self.rotation_angle + 90) % 360
+            self.apply_rotation()
 
 
     def move_current_file_to_folder(self):
@@ -816,6 +897,63 @@ class FileViewer(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Move Failed", f"Could not move file:\n{str(e)}")
 
+    def apply_rotation(self):
+        if not self.files:
+            return
+
+        full_path = self.files[self.current_index]
+        _, ext = os.path.splitext(full_path.lower())
+
+        if ext in IMAGE_EXTENSIONS:
+            pixmap = QPixmap(full_path)
+            if pixmap.isNull():
+                return
+            transform = QTransform().rotate(self.rotation_angle)
+            rotated = pixmap.transformed(transform, Qt.SmoothTransformation)
+            scaled = rotated.scaled(
+                self.display_panel.width(),
+                self.display_panel.height() - 50,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            self.label.setPixmap(scaled)
+
+        elif ext in VIDEO_EXTENSIONS:
+            if self.vlc_player.is_playing():
+                self.vlc_player.stop()
+
+            self.vlc_player.release()
+            self.vlc_player = self.vlc_instance.media_player_new()
+            self.vlc_player.set_hwnd(int(self.video_widget.winId()))
+
+            media = self.vlc_instance.media_new(full_path)
+
+            transform_map = {
+                0: None,
+                90: "1",    # 90 clockwise
+                180: "2",   # 180
+                270: "3",   # 270
+            }
+            transform_val = transform_map.get(self.rotation_angle % 360)
+
+            if transform_val:
+                media.add_option("video-filter=transform")
+                media.add_option(f"transform-type={transform_val}")
+                media.add_option("--no-video-filter-caching")
+
+            else:
+                media.add_option("no-video-filter")  # Ensure filter is removed when angle is 0
+
+            self.vlc_player.set_media(media)
+            self.vlc_player.play()
+
+    def select_playlist_directory(self):
+        directory = QFileDialog.getExistingDirectory(self, "Select Playlist Directory")
+        if directory:
+            self.playlist_dir = directory
+            self.save_config()
+            self.refresh_playlist_dropdown()
+            QMessageBox.information(self, "Playlist Directory Set", f"Now using:\n{directory}")
 
 
 
@@ -837,7 +975,11 @@ class FileViewer(QWidget):
             
 
     def save_config(self):
-        config = {'source_dir': self.source_dir, 'dest_dir': self.dest_dir}
+        config = {
+        'source_dir': self.source_dir,
+        'dest_dir': self.dest_dir,
+        'playlist_dir': self.playlist_dir
+        }
         with open(CONFIG_FILE, 'w') as f:
             json.dump(config, f)
 
@@ -1002,17 +1144,20 @@ class FileViewer(QWidget):
             self.video_widget.hide()
             self.label.setText(f"File: {os.path.basename(full_path)}")
 
+        self.apply_rotation()
+
+
     def add_file_to_playlist(self):
         if not hasattr(self, 'dest_playlist') or not self.dest_playlist:
-            if not os.path.isdir(PLAYLIST_DIR): 
-                if os.path.exists(PLAYLIST_DIR):
+            if not os.path.isdir(self.playlist_dir): 
+                if os.path.exists(self.playlist_dir):
                     QMessageBox.warning(self, "Error", "'playlists' exists but is not a folder.")
                     return
-                os.makedirs(PLAYLIST_DIR)
+                os.makedirs(self.playlist_dir)
 
             playlists = [
                 f.replace("_playlist.json", "").replace("_", " ")
-                for f in os.listdir(PLAYLIST_DIR)
+                for f in os.listdir(self.playlist_dir)
                 if f.endswith("_playlist.json")
             ]
 
@@ -1029,7 +1174,7 @@ class FileViewer(QWidget):
         # Proceed to add file
         rel_path = safe_relpath(self.files[self.current_index], APP_DIR)
         encoded = encode_path(rel_path)
-        playlist_path = os.path.join(PLAYLIST_DIR, f"{self.dest_playlist}_playlist.json")
+        playlist_path = os.path.join(self.playlist_dir, f"{self.dest_playlist}_playlist.json")
 
         # Safely load or initialize the playlist
         if os.path.exists(playlist_path):
