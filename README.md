@@ -1,64 +1,54 @@
-# File Viewer
+EDGR - Executable Device Gooning Registry
+===============================
 
-A portable, keyboard-driven multimedia file viewer and playlist handler written in Python using PyQt5 and VLC. This app allows you to view and make playlists to sort files . Display, randomize, save and relocate files with customizable key binds. Moderately fast, lots of code, lots of bugs, but still useable and a good platform to build off of. Most of the code was generated using GPT 4o. Feel free to fork and build off of :)
+Catalog your chaos. Embrace the goon.
 
----
+📁 WHAT IS THIS?
+-----------------
+EDGR is a standalone, zero-install tool for viewing and organizing media files
+with chaotic precision and industrial strength looping. It's like a file viewer...
+but unhinged.
 
-## Features
+Features include:
+- 🖼️ Fast image + GIF viewer
+- 🎥 VLC-powered video playback with smooth seeking
+- 🎞️ Custom clip looping and export
+- 🧠 Playlists for that custom goon experience
+- 🔧 Keyboard shortcut customization
+- 🤖 Gamepad control (yes, really)
 
-### 🖼️ Media Viewer
-- Supports images (`.png`, `.jpg`, `.bmp`), GIFs, and videos (`.mp4`, `.avi`, `.mov`, `.mkv`)
-- Automatically scales media to fit
-- Displays file path above the viewer (truncated, selectable)
+🧾 HOW TO USE
+-------------
+1. Unzip this folder anywhere you like.
+2. Run `EDGR.exe` (double-click or launch from terminal).
+3. Select a source folder of media files.
+4. Scroll, sort, loop, clip, and collect.
+5. You are now gooning. There is no step 6.
 
-### 🎛️ Keybind Navigation
-- Navigate media using keybinds (customizable via `preferences.json`)
-- Default keys:
-  - `↑ / ↓` — Move between files
-  - `← / →` — Seek video (±5 sec)
-  - `0` — Add current file to playlist
-  - `.` — Move current file to a target folder
-  - `1` — Load random folder of files
-- Click left/right half of viewer to move previous/next
+📦 FILES INCLUDED
+------------------
+- `EDGR.exe` ........ The app (launch this)
+- `bin/vlc/` ........ VLC runtime libraries
+- `bin/ffmpeg/` ..... FFmpeg binary for clip export
+- `assets/` ......... (Optional) JSON config files, playlists, etc.
+- `rabbit_icon.ico` . Your favorite goon icon
 
-### 🧠 Playlists
-- Create multiple playlists saved as `.json`
-- Right-click any playlist to:
-  - Rename
-  - Delete
-  - Clean missing entries
-  - Show in folder
-- Files are stored as relative paths for portability
+🛠️ REQUIREMENTS
+----------------
+- Windows 10 or later
+- No install needed
+- VLC & FFmpeg binaries included
+- Brain: optional
 
-### 🖱️ Right-Click File List Actions
-- Add selected to playlist
-- Show in folder
-- Delete from disk
-- Rename file
-- Copy file paths to clipboard
+💡 TIPS
+--------
+- Press `C` to enter Clip Mode
+- Press `Enter` to save a clip
+- Press `F` to toggle fullscreen
+- Customize keybinds under **File → Preferences**
 
-### 📁 Move Mode
-- Press `.` to move the current file to a selected destination folder
-- Path is remembered for session
-- Viewer automatically advances to next file
+🧯 TROUBLESHOOTING
+-------------------
+- VLC not loading? Make sure `bin/vlc/` is next to `EDGR.exe`
+- App won’t launch? Try unblocking the .zip file before extracting (Right-click → Properties → Unblock)
 
-### 🔄 Playlist Auto-Recovery (planned)
-- If files are moved, viewer can attempt to relocate them by filename
-
----
-
-## Configuration
-
-### `preferences.json`
-Customize keybindings:
-
-```json
-{
-  "add_file_to_playlist": "Key_0",
-  "next_file": "Key_Down",
-  "previous_file": "Key_Up",
-  "seek_left": "Key_Left",
-  "seek_right": "Key_Right",
-  "play_random_folder": "Key_1",
-  "move_to_folder": "Key_Period"
-}
