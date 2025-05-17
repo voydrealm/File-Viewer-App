@@ -1,4 +1,4 @@
-('C:\\Users\\jacev\\Documents\\File-Viewer\\build\\EDGR\\PYZ-00.pyz',
+('C:\\Users\\jacev\\Documents\\EDGR\\build\\EDGR\\PYZ-00.pyz',
  [('PIL',
    'C:\\Users\\jacev\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python310\\site-packages\\PIL\\__init__.py',
    'PYMODULE'),

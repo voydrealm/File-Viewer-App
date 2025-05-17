@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['file viewer.py'],
+    ['EDGR.py'],
     pathex=[],
     binaries=[],
     datas=[],
