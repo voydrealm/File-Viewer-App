@@ -400,7 +400,7 @@ class PreferencesDialog(QDialog):
         # === Left Sidebar ===
         self.sidebar = QListWidget()
         self.sidebar.setFixedWidth(200)
-        self.sidebar.addItems(["General", "Viewers", "Sorting", "Keybinds"])
+        self.sidebar.addItems(["Keybinds"])
 
         self.sidebar.setCurrentRow(0)
         main_layout.addWidget(self.sidebar)
@@ -410,9 +410,9 @@ class PreferencesDialog(QDialog):
         main_layout.addWidget(self.stack)
 
         # Add individual pages
-        self.stack.addWidget(self.create_general_page())
-        self.stack.addWidget(self.create_viewers_page())
-        self.stack.addWidget(self.create_sorting_page())
+        #self.stack.addWidget(self.create_general_page())
+        #self.stack.addWidget(self.create_viewers_page())
+        #self.stack.addWidget(self.create_sorting_page())
         self.stack.addWidget(self.create_keybinds_page())
         self.load_keybinds()
 
@@ -486,8 +486,6 @@ class PreferencesDialog(QDialog):
                     field.setText(suffix)
             else:
                 field.setText(raw)
-
-
 
     def create_general_page(self):
         widget = QWidget()
@@ -636,12 +634,12 @@ class FileViewer(QMainWindow):
         open_action = QAction("Open File...", self)
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_file)
-        file_menu.addAction(open_action)
+        #file_menu.addAction(open_action)
 
         exit_action = QAction("Exit", self)
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
+        #file_menu.addAction(exit_action)
 
         preferences_action = QAction("Preferences", self)
         preferences_action.setShortcut("Ctrl+,")
@@ -655,7 +653,7 @@ class FileViewer(QMainWindow):
         clear_action = QAction("Clear Viewers", self)
         clear_action.setShortcut("Ctrl+Shift+C")
         clear_action.triggered.connect(self.clear_all_viewers)
-        edit_menu.addAction(clear_action)
+        #edit_menu.addAction(clear_action)
 
         self.toast_label = QLabel("", self)
         self.toast_label.setStyleSheet("""
@@ -1315,16 +1313,19 @@ class FileViewer(QMainWindow):
     def toggle_fullscreen(self):
         if self.fullscreen:
             self.setWindowFlags(self.windowFlags() & ~Qt.FramelessWindowHint)
-            self.showNormal()
+            self.showMaximized()
             self.playlist_panel.show()
-            self.info_panel.show()  # ✅ Show left panel again
+            self.info_panel.show()
+            self.menuBar().show()  # 👈 Show menu bar again
             self.fullscreen = False
         else:
             self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
             self.showFullScreen()
             self.playlist_panel.hide()
-            self.info_panel.hide()  # ✅ Hide left panel
+            self.info_panel.hide()
+            self.menuBar().hide()  # 👈 Hide menu bar
             self.fullscreen = True
+
 
 
 
@@ -2106,8 +2107,6 @@ class FileViewer(QMainWindow):
 
     def update_window_title(self):
         title = f"EDGR - Enhanced Directory Gooning Register"
-        if self.dest_dir:
-            title += f" | Destination: {self.dest_dir}"
         self.source_label.setText(f"📁 Source:\n{self.source_dir or 'Not Set'}")
         self.dest_label.setText(f"📦 Destination:\n{self.dest_dir or 'Not Set'}")
         self.setWindowTitle(title)
