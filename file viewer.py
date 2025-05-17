@@ -11,9 +11,11 @@ import subprocess
 from PyQt5.QtWidgets import (QInputDialog, QMenu, QAction, QMessageBox, QSizePolicy,
     QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QFileDialog, QMessageBox, QCheckBox, QSplitter, QComboBox, QFrame, QMenuBar, QMenu,
-    QSlider )
-from PyQt5.QtGui import QPixmap, QMovie, QTransform, QKeyEvent, QColor, QPainter
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QEvent, QElapsedTimer
+    QSlider, QTreeView, QFileSystemModel, QPushButton )
+from PyQt5.QtGui import QPixmap, QMovie, QTransform, QKeyEvent, QColor, QPainter, QIcon, QFont
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QEvent, QElapsedTimer, QDir
+
+
 
 DOCUMENTS_DIR = os.path.join(os.path.expanduser("~"), "Documents")
 ASSETS_DIR = os.path.join(DOCUMENTS_DIR, "assets")
@@ -23,6 +25,8 @@ PLAYLIST_DIR = os.path.join(ASSETS_DIR, "playlists")
 os.makedirs(PLAYLIST_DIR, exist_ok=True)
 CONFIG_FILE = os.path.join(ASSETS_DIR,"config.json")
 FAVORITES_FILE = os.path.join(ASSETS_DIR, "favorites.json")
+
+
 
 # Build the full path to ffmpeg.exe
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -47,6 +51,16 @@ IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.bmp']
 VIDEO_EXTENSIONS = ['.mp4', '.avi', '.mov', '.mkv']
 GIF_EXTENSIONS = ['.gif']
 
+def resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        base_path = sys._MEIPASS  # PyInstaller sets this at runtime
+    except AttributeError:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+
 
 def safe_relpath(path, base):
     try:
@@ -61,23 +75,6 @@ def decode_path(encoded):
     return base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8")
 
 from PyQt5.QtCore import QObject, pyqtSignal, QThread
-
-class TrashWorker(QObject):
-    finished = pyqtSignal(bool, str)
-
-    def __init__(self, path):
-        super().__init__()
-        self.path = path
-
-    def run(self):
-        from send2trash import send2trash
-        try:
-            send2trash(self.path)
-            self.finished.emit(True, self.path)
-        except Exception as e:
-            print(f"❌ Error deleting file: {e}")
-            self.finished.emit(False, str(e))
-
 
 class HandleSlider(QSlider):
     def __init__(self, viewer, *args, **kwargs):
@@ -98,6 +95,11 @@ class HandleSlider(QSlider):
         self.end_handle = None
         self.drag_mode = None     # 'start', 'end', 'playhead'
 
+    def format_time(self, seconds):
+        minutes = int(seconds) // 60
+        secs = int(seconds) % 60
+        return f"{minutes:02}:{secs:02}"
+
 
     def update_smooth_position(self):
         if self.drag_mode:
@@ -108,74 +110,148 @@ class HandleSlider(QSlider):
         if abs(self.current_pos - self.target_pos) < 0.001:
             self.current_pos = self.target_pos  # snap if close
         self.update()
-
+    
+    
 
     def paintEvent(self, event):
         painter = QPainter(self)
         w = self.width()
         h = self.height()
 
-        # Slider base line
-        painter.setPen(Qt.gray)
-        painter.drawLine(10, h // 2, w - 10, h // 2)
+        bar_x = 50
+        bar_w = w - 100  # 50px padding
+        center_y = h // 2
+
         painter.setRenderHint(QPainter.Antialiasing)
 
+        # Draw base slider bar
+        painter.setPen(Qt.gray)
+        painter.drawLine(bar_x, center_y, bar_x + bar_w, center_y)
 
-        # Selection range
+        # Get zoom window and video info
+        zoom_start = self.viewer.clip_zoom_start
+        zoom_end = self.viewer.clip_zoom_end
+        zoom_range = max(zoom_end - zoom_start, 0.01)
+        full_duration = max(self.viewer.video_duration, 0.01)
+
+        # Convert seconds to pixel position within zoom
+        def to_px(seconds):
+            return int(((seconds - zoom_start) / zoom_range) * bar_w + bar_x)
+
+        # Draw selection highlight
         if self.start_handle is not None and self.end_handle is not None:
-            x1 = int(self.start_handle * (w - 20)) + 10
-            x2 = int(self.end_handle * (w - 20)) + 10
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor("yellow"))
-            painter.drawRect(x1, h // 2 - 4, x2 - x1, 8)
-            painter.setBrush(QColor("orange"))
-            painter.drawRect(x1 - 4, 4, 8, h - 8)
-            painter.drawRect(x2 - 4, 4, 8, h - 8)
+            start_sec = self.start_handle * full_duration
+            end_sec = self.end_handle * full_duration
 
-        # Playback position
-        px = int(self.current_pos * (w - 20)) + 10
-        radius = 6
-        painter.setBrush(QColor("red"))
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(px - radius, h // 2 - radius, radius * 2, radius * 2)
+            if zoom_start <= end_sec and start_sec <= zoom_end:
+                x1 = to_px(start_sec)
+                x2 = to_px(end_sec)
+                painter.setPen(Qt.NoPen)
+
+                # Yellow selection bar
+                painter.setBrush(QColor("yellow"))
+                painter.drawRect(x1, center_y - 4, x2 - x1, 8)
+
+                # Orange handles
+                painter.setBrush(QColor("orange"))
+                painter.drawRect(x1 - 4, 4, 8, h - 8)
+                painter.drawRect(x2 - 4, 4, 8, h - 8)
+
+        # Draw red playhead
+        playhead_sec = self.current_pos * full_duration
+        if zoom_start <= playhead_sec <= zoom_end:
+            px = to_px(playhead_sec)
+            painter.setBrush(QColor("red"))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(px - 6, center_y - 6, 12, 12)
+
+        # Draw zoom timestamps
+        painter.setPen(QColor("white"))
+        painter.drawText(5, center_y + 6, self.viewer.format_time(zoom_start))
+        painter.drawText(w - 45, center_y + 6, self.viewer.format_time(zoom_end))
+
+
 
     def mousePressEvent(self, event):
         x = event.x()
         w = self.width()
-        px = int(self.current_pos * (w - 20)) + 10
-        x1 = int((self.start_handle or 0) * (w - 20)) + 10
-        x2 = int((self.end_handle or 1) * (w - 20)) + 10
+        bar_x = 50
+        bar_w = w - 100
+        pos = (x - bar_x) / bar_w
+        pos = max(0, min(1, pos))
 
-        if abs(x - x1) < 10:
+        zoom_start = self.viewer.clip_zoom_start
+        zoom_end = self.viewer.clip_zoom_end
+        zoom_range = max(zoom_end - zoom_start, 0.01)
+        full_duration = self.viewer.video_duration
+
+        # Convert handle positions to screen coordinates
+        start_handle = self.start_handle or 0
+        end_handle = self.end_handle or 1
+
+        start_sec = start_handle * full_duration
+        end_sec = end_handle * full_duration
+        playhead_sec = self.current_pos * full_duration
+
+        def to_px(sec):
+            return int(((sec - zoom_start) / zoom_range) * bar_w + bar_x)
+
+        x1 = to_px(start_sec)  # allow dragging even if offscreen
+
+        x2 = to_px(end_sec) if zoom_start <= end_sec <= zoom_end else -9999
+        px = to_px(playhead_sec) if zoom_start <= playhead_sec <= zoom_end else -9999
+
+        HIT_RADIUS = 10
+
+        if abs(x - x1) < HIT_RADIUS:
             self.drag_mode = 'start'
-        elif abs(x - x2) < 10:
+        elif abs(x - x2) < HIT_RADIUS:
             self.drag_mode = 'end'
-        elif abs(x - px) < 10:
+        elif abs(x - px) < HIT_RADIUS:
             self.drag_mode = 'playhead'
             if hasattr(self.parent(), "pause_video_for_scrub"):
                 self.parent().pause_video_for_scrub()
+        else:
+            self.drag_mode = None
+
+
+
+
 
     def mouseMoveEvent(self, event):
         if not self.drag_mode:
             return
 
-        pos = (event.x() - 10) / (self.width() - 20)
+        x = event.x()
+        w = self.width()
+        bar_x = 50
+        bar_w = w - 100
+        pos = (x - bar_x) / bar_w
         pos = max(0, min(1, pos))
 
-        # Use default range if no handles
-        start = self.start_handle if self.start_handle is not None else 0
-        end = self.end_handle if self.end_handle is not None else 1
+        zoom_start = self.viewer.clip_zoom_start
+        zoom_end = self.viewer.clip_zoom_end
+        zoom_range = max(zoom_end - zoom_start, 0.01)
+        full_duration = self.viewer.video_duration
+
+        absolute_time = zoom_start + pos * zoom_range
+        normalized = absolute_time / full_duration
+
+        start = self.start_handle or 0
+        end = self.end_handle or 1
 
         if self.drag_mode == 'start':
-            self.start_handle = min(pos, end - 0.01)
+            self.start_handle = min(normalized, end - 0.01)
         elif self.drag_mode == 'end':
-            self.end_handle = max(pos, start + 0.01)
+            self.end_handle = max(normalized, start + 0.01)
         elif self.drag_mode == 'playhead':
-            self.current_pos = max(start, min(end, pos))
+            self.current_pos = normalized
+            self.target_pos = normalized
             self.seek_parent_video()
-            
 
         self.update()
+
+
 
     def mouseReleaseEvent(self, event):
         if self.drag_mode == 'playhead':
@@ -263,6 +339,7 @@ class FileLoaderWorker(QObject):
 class FileViewer(QWidget):
     def __init__(self):
         super().__init__()
+        
 
         self._threads = []
         self.move_target_folder = None
@@ -276,18 +353,23 @@ class FileViewer(QWidget):
         self.playlist_dir = PLAYLIST_DIR
         self.last_button_states = {}
         
+        
         self.play_timer = QElapsedTimer()
         self.play_start_time = 0
         self.video_duration = 1  # fallback default
         
-        
+        self.clip_zoom_start = 0
+        self.clip_zoom_end = 1  # Default to full video range
+
+
         
         self.clip_mode_active = False
         self.clip_start_sec = None
         self.clip_end_sec = None
       
         self.setWindowTitle("File Viewer")
-        self.setGeometry(100, 100, 1000, 600)
+        self.resize(1200, 800)
+        self.showMaximized()
     
         self.outer_layout = QVBoxLayout(self)
         self.outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -309,6 +391,138 @@ class FileViewer(QWidget):
         self.toast_label.setFixedHeight(30)
         self.toast_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         
+        
+        QApplication.setStyle("Fusion")
+
+        # Info Panel (Left Panel)
+        self.info_panel = QFrame()
+        self.info_panel.setMinimumWidth(300)
+        self.info_panel.setMaximumWidth(300)
+        self.info_panel.setStyleSheet("background-color: #1a1a1a; padding: 8px;")
+        self.info_layout = QVBoxLayout(self.info_panel)
+
+        self.source_label = QLabel("📁 Source: Not Set")
+        self.dest_label = QLabel("📦 Destination: Not Set")
+
+        self.fs_model = QFileSystemModel()
+        self.fs_model.setRootPath(self.source_dir or QDir.homePath())
+        
+
+        self.fs_model.setFilter(QDir.AllDirs | QDir.Files | QDir.NoDotAndDotDot)
+        self.fs_model.setNameFilters(["*.png", "*.jpg", "*.mp4", "*.mov", "*.gif"])
+        self.fs_model.setNameFilterDisables(False)
+        self.fs_model.setFilter(QDir.AllDirs | QDir.NoDotAndDotDot | QDir.Drives)
+        
+
+
+
+        self.fs_list = QListWidget()
+        self.fs_list.setStyleSheet("QListWidget { font-size: 10pt; }")
+        self.fs_list.setSelectionMode(QListWidget.SingleSelection)
+        self.fs_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.fs_list.itemDoubleClicked.connect(self.handle_explorer_item_click)
+        self.fs_list.customContextMenuRequested.connect(self.show_explorer_context_menu)
+        self.fs_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+
+        for lbl in [self.source_label, self.dest_label]:
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("color: #bbb; font-size: 10pt;")
+            self.info_layout.addWidget(lbl)
+        
+        self.info_layout.addStretch()
+
+        # -- File Explorer Panel (wrapped with header) --
+        self.fs_panel = QWidget()
+        fs_layout = QVBoxLayout(self.fs_panel)
+        fs_layout.setContentsMargins(0, 0, 0, 0)
+        fs_layout.setSpacing(0)
+
+        fs_label = QLabel("📁 File Explorer:")
+        fs_label.setStyleSheet("""
+            QLabel {
+                background-color: #2a2a2a;
+                color: #ccc;
+                padding: 4px 8px;
+                font-size: 9pt;
+                font-weight: bold;
+            }
+        """)
+
+        self.fs_list = QListWidget()
+        self.fs_list.setStyleSheet("QListWidget { font-size: 9pt; }")
+        self.fs_list.setSelectionMode(QListWidget.SingleSelection)
+        self.fs_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.fs_list.itemDoubleClicked.connect(self.handle_explorer_item_click)
+        self.fs_list.customContextMenuRequested.connect(self.show_explorer_context_menu)
+        self.fs_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        fs_layout.addWidget(fs_label)
+        fs_layout.addWidget(self.fs_list)
+
+
+        # -- Favorites Panel --
+        self.fav_panel = QWidget()
+        fav_layout = QVBoxLayout(self.fav_panel)
+        fav_layout.setContentsMargins(0, 0, 0, 0)
+        fav_layout.setSpacing(0)
+
+        # Header label with light background
+        fav_label = QLabel("⭐ Favorite Folders")
+        fav_label.setStyleSheet("""
+            QLabel {
+                background-color: #2a2a2a;
+                color: #ccc;
+                padding: 4px 8px;
+                font-size: 9pt;
+                font-weight: bold;
+            }
+        """)
+
+        self.fav_list = QListWidget()
+        self.fav_list.setStyleSheet("QListWidget { font-size: 9pt; }")
+        self.fav_list.setFixedHeight(100)
+        self.fav_list.itemClicked.connect(self.handle_favorite_selected)
+
+        fav_layout.addWidget(fav_label)
+        fav_layout.addWidget(self.fav_list)
+
+
+
+        # -- Playlists Panel (no outer border) --
+        self.playlist_panel = QWidget()
+        playlist_layout = QVBoxLayout(self.playlist_panel)
+        playlist_layout.setContentsMargins(0, 0, 0, 0)
+        playlist_layout.setSpacing(0)
+
+        playlist_label = QLabel("🎵 Playlists")
+        playlist_label.setStyleSheet("""
+            QLabel {
+                background-color: #2a2a2a;
+                color: #ccc;
+                padding: 4px 8px;
+                font-size: 9pt;
+                font-weight: bold;
+            }
+        """)
+
+        self.playlist_list = QListWidget()
+        self.playlist_list.setStyleSheet("QListWidget { font-size: 9pt; }")
+        self.playlist_list.setFixedHeight(100)
+        self.playlist_list.itemClicked.connect(self.handle_playlist_selected)
+
+        playlist_layout.addWidget(playlist_label)
+        playlist_layout.addWidget(self.playlist_list)
+
+
+
+        # Add both panels to the info layout
+        self.info_layout.addWidget(self.fav_panel)
+        self.info_layout.addWidget(self.playlist_panel)
+        self.info_layout.addWidget(self.fs_panel, stretch=1)
+
+
+
         self.main_layout = QHBoxLayout()
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
@@ -320,7 +534,6 @@ class FileViewer(QWidget):
 
         self.playback_slider = HandleSlider(self)
 
-        
 
         self.display_layout = QVBoxLayout(self.display_panel)
         self.display_layout.setContentsMargins(0, 0, 0, 0)
@@ -378,6 +591,8 @@ class FileViewer(QWidget):
         # Playlist Panel
         self.playlist_panel = QFrame()
         self.playlist_panel.setMinimumWidth(300)
+        self.playlist_panel.setMaximumWidth(300)
+
         
 
 
@@ -428,6 +643,11 @@ class FileViewer(QWidget):
         self.file_list.setSelectionMode(QListWidget.ExtendedSelection)
         self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.file_list.customContextMenuRequested.connect(self.show_file_list_context_menu)
+        self.file_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.file_list.setWordWrap(False)  # prevent ugly multi-line breaks
+        self.file_list.setUniformItemSizes(True)  # speeds up rendering
+        self.file_list.setStyleSheet("QListWidget::item { padding-right: 10px; }")
+        self.file_list.setTextElideMode(Qt.ElideRight)
         
         self.sort_combo = QComboBox()
         self.sort_combo.addItems([
@@ -491,13 +711,12 @@ class FileViewer(QWidget):
 
         # Main Splitter
         self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.addWidget(self.info_panel)       # New panel
         self.splitter.addWidget(self.display_panel)
         self.splitter.addWidget(self.playlist_panel)
-        self.splitter.setSizes([self.width() - 300, 300])
-        self.splitter.setCollapsible(0, False)
-        self.splitter.setCollapsible(1, False)
-        self.splitter.setStretchFactor(0, 1)  # Display panel: expands freely
-        self.splitter.setStretchFactor(1, 0)  # Playlist panel: no stretch
+        self.splitter.setSizes([300, self.width() - 600, 300])
+
+        
 
         self.main_layout.addWidget(self.splitter)
 
@@ -513,12 +732,101 @@ class FileViewer(QWidget):
         self.display_layout.addWidget(self.playback_slider)
         self.playback_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.target_pos = self.vlc_player.get_position()
+        app.setWindowIcon(QIcon(resource_path("rabbit_icon.ico")))
+        self.populate_favorite_list()
+        self.populate_playlist_list()
+
 
         pygame.init()
         pygame.joystick.init()
         #self.controller_timer = QTimer(self)
         #self.controller_timer.timeout.connect(self.check_controller_input)
         #self.controller_timer.start(100)
+
+    def populate_favorite_list(self):
+        self.fav_list.clear()
+
+        if not os.path.exists(FAVORITES_FILE):
+            return
+
+        with open(FAVORITES_FILE, "r") as f:
+            favorites = json.load(f)
+            for name in sorted(favorites.keys()):
+                self.fav_list.addItem(name)
+
+
+    def populate_playlist_list(self):
+        self.playlist_list.clear()
+
+        if not os.path.exists(self.playlist_dir):
+            os.makedirs(self.playlist_dir)
+
+        for file in sorted(os.listdir(self.playlist_dir)):
+            if file.endswith("_playlist.json"):
+                name = file.replace("_playlist.json", "").replace("_", " ")
+                self.playlist_list.addItem(name)
+
+
+    def handle_favorite_selected(self, item):
+        name = item.text()
+        with open(FAVORITES_FILE, "r") as f:
+            favorites = json.load(f)
+        folder = favorites.get(name)
+        if folder and os.path.exists(folder):
+            self.source_dir = folder
+            self.save_config()
+            self.populate_file_explorer()
+            self.load_files_recursive()
+            self.refresh_files()
+            self.update_window_title()
+    
+    def handle_playlist_selected(self, item):
+        name = item.text()
+        base = name.strip().lower().replace(" ", "_")
+        self.load_playlist(base)
+
+    def format_time(self, seconds):
+        minutes = int(seconds) // 60
+        secs = int(seconds) % 60
+        return f"{minutes:02}:{secs:02}"
+
+    def show_explorer_context_menu(self, position):
+        item = self.fs_list.itemAt(position)
+        if not item:
+            return
+
+        name = item.text()
+        if name == "..":
+            path = os.path.dirname(self.source_dir.rstrip(os.sep))
+        else:
+            path = os.path.join(self.source_dir, name)
+
+        if not os.path.isdir(path):
+            return
+
+        menu = QMenu(self)
+        set_source_action = QAction("Set as Source Folder", self)
+        menu.addAction(set_source_action)
+
+        action = menu.exec_(self.fs_list.viewport().mapToGlobal(position))
+        if action == set_source_action:
+            self.source_dir = path
+            self.save_config()
+            self.load_files_recursive()
+            self.refresh_files()
+            self.populate_file_explorer()
+
+
+        action = menu.exec_(self.fs_view.viewport().mapToGlobal(position))
+        if action == set_source_action:
+            self.source_dir = path
+            self.save_config()
+            self.populate_file_explorer()
+            self.load_files_recursive()
+            self.refresh_files()
+
+            self.fs_view.setRootIndex(self.fs_model.index(path))
+
 
 
     def scan_for_duplicates(self):
@@ -597,6 +905,40 @@ class FileViewer(QWidget):
 
             self.last_button_states[button] = current
 
+    def populate_file_explorer(self):
+        self.fs_list.clear()
+
+        if not self.source_dir or not os.path.exists(self.source_dir):
+            return
+
+        # ".." goes at the top if not at root
+        parent_dir = os.path.dirname(self.source_dir.rstrip(os.sep))
+        if parent_dir and parent_dir != self.source_dir:
+            self.fs_list.addItem("..")
+
+        try:
+            entries = sorted(os.listdir(self.source_dir))
+            for name in entries:
+                full_path = os.path.join(self.source_dir, name)
+                if os.path.isdir(full_path):
+                    self.fs_list.addItem(name)
+        except Exception as e:
+            print(f"⚠️ Error reading directory: {e}")
+
+    def handle_explorer_item_click(self, item):
+        name = item.text()
+        if name == "..":
+            new_dir = os.path.dirname(self.source_dir.rstrip(os.sep))
+        else:
+            new_dir = os.path.join(self.source_dir, name)
+
+        if os.path.isdir(new_dir):
+            self.source_dir = new_dir
+            self.populate_file_explorer()
+
+
+
+
     def save_favorite_folder(self):
         if not self.source_dir:
             QMessageBox.warning(self, "No Source", "No source folder to save.")
@@ -642,12 +984,12 @@ class FileViewer(QWidget):
             folder = favorites[selected]
             if os.path.exists(folder):
                 self.source_dir = folder
+                self.populate_file_explorer()
                 self.load_files_recursive()
                 self.refresh_files()
-                self.update_window_title()
                 self.save_config()
                 if self.files:
-                    self.show_file()
+                    self.set_current_file(0)
                 else:
                     self.label.setText("No files found in this folder.")
                     self.label.setPixmap(QPixmap())
@@ -710,12 +1052,15 @@ class FileViewer(QWidget):
             self.setWindowFlags(self.windowFlags() & ~Qt.FramelessWindowHint)
             self.showNormal()
             self.playlist_panel.show()
+            self.info_panel.show()  # ✅ Show left panel again
             self.fullscreen = False
         else:
             self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
             self.showFullScreen()
             self.playlist_panel.hide()
+            self.info_panel.hide()  # ✅ Hide left panel
             self.fullscreen = True
+
 
 
     def play_random_folder(self):
@@ -749,7 +1094,7 @@ class FileViewer(QWidget):
         self.files = collected_files
         self.current_index = 0
         self.populate_file_list()
-        self.show_file()
+        self.set_current_file(0)
         self.file_list.setCurrentRow(0)
         self.show_toast(f"Random folder: {os.path.basename(selected_folder)}")
 
@@ -966,11 +1311,12 @@ class FileViewer(QWidget):
 
     def load_all_files(self):
         if self.source_dir and os.path.exists(self.source_dir):
+            self.populate_file_explorer()
             self.load_files_recursive()
             self.populate_file_list()
             if self.files:
                 self.current_index = 0
-                self.show_file()
+                self.set_current_file(0)
 
     def playlist_dropdown_changed(self, index):
         selected = self.playlist_dropdown.itemText(index)
@@ -1006,6 +1352,8 @@ class FileViewer(QWidget):
 
         self.playlist_dropdown.addItem("+ New Playlist")  
         self.playlist_dropdown.blockSignals(False)
+
+    
 
     def prompt_new_playlist(self):
         name, ok = QInputDialog.getText(self, "New Playlist", "Enter playlist name:")
@@ -1051,8 +1399,37 @@ class FileViewer(QWidget):
             return
 
         self.populate_file_list()
-        self.show_file()
+        self.set_current_file(0)
         self.file_list.setCurrentRow(0)
+
+
+    def handle_explorer_double_click(self, index):
+        path = self.fs_model.filePath(index)
+
+        if os.path.basename(path) == "..":
+            parent = os.path.dirname(self.source_dir.rstrip(os.sep))
+            if os.path.exists(parent):
+                self.source_dir = parent
+                self.fs_view.setRootIndex(self.fs_model.index(parent))
+                self.populate_file_explorer()
+                self.load_files_recursive()
+                self.refresh_files()
+            return
+
+        if os.path.isdir(path):
+            self.source_dir = path
+            self.fs_view.setRootIndex(self.fs_model.index(path))
+            self.populate_file_explorer()
+            self.load_files_recursive()
+            self.refresh_files()
+        elif os.path.isfile(path):
+            self.files = [path]
+            self.current_index = 0
+            self.populate_file_list()
+            self.set_current_file(0)
+
+
+
 
     def select_destination_playlist(self):
         if not os.path.isdir(self.playlist_dir):
@@ -1136,10 +1513,13 @@ class FileViewer(QWidget):
             self.randomize_files()
 
         elif event.key() == Qt.Key_Space:
+            self.playback_slider.setFocus()  # 👈 shift focus to the slider
             if self.vlc_player.is_playing():
                 self.vlc_player.pause()
             else:
                 self.vlc_player.play()
+            return  # 👈 prevent spacebar from triggering other widgets (like list scrolling)f
+
 
         elif key == Qt.Key_Z:
             self.rotation_angle = (self.rotation_angle - 90) % 360
@@ -1158,27 +1538,39 @@ class FileViewer(QWidget):
                 self.show_toast("Not a video file.")
                 return
 
+            duration_sec = self.video_duration
+
             if self.clip_mode_active:
-                # Cancel clip mode
+                # 🔄 Cancel clip mode
                 self.clip_mode_active = False
                 self.clip_start_sec = None
                 self.clip_end_sec = None
+                self.clip_zoom_start = 0
+                self.clip_zoom_end = duration_sec
                 self.playback_slider.start_handle = None
                 self.playback_slider.end_handle = None
                 self.playback_slider.update()
                 self.show_toast("❌ Clip mode canceled")
             else:
-                # Activate clip mode
+                # 🎬 Activate clip mode
                 current_sec = self.vlc_player.get_time() / 1000
-                duration_sec = self.vlc_player.get_length() / 1000
                 self.clip_start_sec = max(0, current_sec)
                 self.clip_end_sec = min(duration_sec, self.clip_start_sec + 5.0)
+
+                # 🔍 Zoom in around the clip with 10s padding
+                padding = 10
+                self.clip_zoom_start = max(0, self.clip_start_sec - padding)
+                self.clip_zoom_end = min(duration_sec, self.clip_end_sec + padding)
+
                 self.clip_mode_active = True
 
+                # Slider handles (still use full duration to normalize)
                 self.playback_slider.start_handle = self.clip_start_sec / duration_sec
                 self.playback_slider.end_handle = self.clip_end_sec / duration_sec
                 self.playback_slider.update()
+
                 self.show_toast(f"🎬 Clip mode: {int(self.clip_start_sec)}s to {int(self.clip_end_sec)}s")
+
 
 
         elif key in (Qt.Key_Enter, Qt.Key_Return) and self.clip_mode_active:
@@ -1199,7 +1591,7 @@ class FileViewer(QWidget):
         base, ext = os.path.splitext(os.path.basename(input_path))
         output_dir = os.path.dirname(input_path)
 
-        # Start with _clip, then increment if needed
+        # Create unique output filename
         counter = 1
         output_path = os.path.join(output_dir, f"{base}_clip{ext}")
         while os.path.exists(output_path):
@@ -1207,148 +1599,43 @@ class FileViewer(QWidget):
             counter += 1
 
         try:
-            (
-                ffmpeg
-                .input(input_path, ss=self.clip_start_sec, to=self.clip_end_sec)
-                .output(output_path, vcodec='libx264', acodec='aac', preset='medium')
+            # Run ffmpeg to export the clip
+            ffmpeg.input(input_path, ss=self.clip_start_sec, to=self.clip_end_sec) \
+                .output(output_path, vcodec='libx264', acodec='aac', preset='medium') \
                 .run(overwrite_output=True)
-            )
+
             print(f"✅ Clip saved: {output_path}")
             self.show_toast(f"Clip saved as: {os.path.basename(output_path)}")
 
-            # ✅ Insert new clip into file list
+            # Insert new clip into file list
             if os.path.exists(output_path):
                 insert_index = self.current_index + 1
                 self.files.insert(insert_index, output_path)
                 item = QListWidgetItem(os.path.basename(output_path))
                 self.file_list.insertItem(insert_index, item)
 
+                # Auto-add to 'clips' playlist
+                playlist_name = "clips"
+                playlist_file = self.get_playlist_path(playlist_name)
+
+                if os.path.exists(playlist_file):
+                    with open(playlist_file, "r") as f:
+                        playlist = json.load(f)
+                else:
+                    playlist = []
+
+                rel_path = safe_relpath(output_path, APP_DIR)
+                encoded = encode_path(rel_path)
+
+                if encoded not in playlist:
+                    playlist.append(encoded)
+                    with open(playlist_file, "w") as f:
+                        json.dump(playlist, f, indent=2)
+                    print(f"✅ Added to playlist: {playlist_name}")
+
         except ffmpeg.Error as e:
             print("❌ ffmpeg error:", e)
             self.show_toast("Error saving clip")
-
-
-
-    def delete_current_file(self):
-        if not self.files:
-            return
-
-        file_to_delete = os.path.abspath(self.files[self.current_index])
-
-        if not os.path.exists(file_to_delete):
-            QMessageBox.warning(self, "Error", f"File not found:\n{file_to_delete}")
-            return
-
-        confirm = QMessageBox.question(
-            self,
-            "Delete File",
-            f"Are you sure you want to move this file to the Recycle Bin?\n\n{file_to_delete}",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-
-        if confirm != QMessageBox.Yes:
-            return
-
-        self.dismount_current_file()
-
-        # Delay file deletion to allow OS to release file lock
-        QTimer.singleShot(500, lambda: self._force_delete_file(file_to_delete))
-
-    def _force_delete_file(self, path):
-        from send2trash import send2trash
-
-        try:
-            send2trash(path)
-            print(f"✅ Deleted: {path}")
-            self.show_toast("File moved to Recycle Bin.")
-
-            del self.files[self.current_index]
-
-            if self.files:
-                self.current_index %= len(self.files)
-                self.populate_file_list()
-                self.show_file()
-                self.file_list.setCurrentRow(self.current_index)
-            else:
-                self.label.setText("No files remaining.")
-                self.file_list.clear()
-
-            # 🔁 Reinitialize VLC safely
-            self.vlc_player = self.vlc_instance.media_player_new()
-            self.vlc_player.set_hwnd(int(self.video_widget.winId()))
-
-        except Exception as e:
-            print(f"❌ Delete failed: {e}")
-            QMessageBox.critical(self, "Delete Error", f"Could not delete file:\n\n{path}\n\n{e}")
-
-
-    def _finish_delete(self, file_to_delete):
-        from send2trash import send2trash
-
-        try:
-            send2trash(file_to_delete)
-            print(f"✅ Deleted: {file_to_delete}")
-            self.show_toast("File moved to Recycle Bin.")
-
-            del self.files[self.current_index]
-
-            if self.files:
-                self.current_index %= len(self.files)
-                self.populate_file_list()
-                self.show_file()
-                self.file_list.setCurrentRow(self.current_index)
-            else:
-                self.label.setText("No files remaining.")
-                self.file_list.clear()
-
-        except Exception as e:
-            QMessageBox.critical(self, "Delete Error", f"Could not delete:\n{file_to_delete}\n\n{e}")
-
-    def on_file_deleted(self, success, info):
-        if success:
-            print(f"✅ Deleted: {info}")
-            self.show_toast("File moved to Recycle Bin.")
-
-            del self.files[self.current_index]
-
-            if self.files:
-                self.current_index %= len(self.files)
-                self.populate_file_list()
-                self.show_file()
-                self.file_list.setCurrentRow(self.current_index)
-            else:
-                self.label.setText("No files remaining.")
-                self.file_list.clear()
-        else:
-            QMessageBox.critical(self, "Delete Error", f"Could not delete:\n{info}")
-
-
-    def dismount_current_file(self):
-        try:
-            if self.vlc_player:
-                self.vlc_player.stop()
-                media = self.vlc_player.get_media()
-                if media:
-                    media.release()
-                self.vlc_player.release()
-                self.vlc_player = None  # Ensure full shutdown
-
-            if self.movie:
-                self.movie.stop()
-                self.movie = None
-
-            self.label.clear()
-            self.label.setPixmap(QPixmap())
-            self.video_widget.hide()
-            QApplication.processEvents()
-        except Exception as e:
-            print(f"⚠️ Error during dismount: {e}")
-
-
-
-
-
 
 
     def move_current_file_to_folder(self):
@@ -1435,12 +1722,12 @@ class FileViewer(QWidget):
         if source:
             self.source_dir = source
             self.save_config()
+            self.populate_file_explorer()  # 👈 Add this
             self.load_files_recursive()
-            self.update_window_title()
             if not self.files:
                 self.label.setText("No files found in the source directory.")
             else:
-                self.show_file()
+                self.set_current_file(0)
             
     def save_config(self):
         config = {
@@ -1459,28 +1746,43 @@ class FileViewer(QWidget):
                 self.dest_dir = config.get('dest_dir', '')
 
                 if self.source_dir and os.path.exists(self.source_dir):
+                    self.populate_file_explorer()
                     self.load_files_recursive()
                     if self.files:
-                        self.show_file()
-                    self.update_window_title()
+                        self.set_current_file(0)
                     
-                if self.dest_dir and os.path.exists(self.dest_dir):
-                    self.update_window_title()
+                    
 
-    def load_files_recursive(self):
+    def load_files_recursive(self, max_depth=1):
         self.setEnabled(False)
 
-        self.loader_thread = QThread(self)
-        self.loader_worker = FileLoaderWorker(self.source_dir)
-        self.loader_worker.moveToThread(self.loader_thread)
+        def walk_limited(root, depth):
+            if depth < 0:
+                return []
+            entries = []
+            try:
+                for entry in os.scandir(root):
+                    try:
+                        if entry.is_file():
+                            entries.append(entry.path)
+                        elif entry.is_dir(follow_symlinks=False):
+                            entries += walk_limited(entry.path, depth - 1)
+                    except (PermissionError, FileNotFoundError):
+                        continue
+            except (PermissionError, FileNotFoundError):
+                pass
+            return entries
 
-        self.loader_thread.started.connect(self.loader_worker.run)
-        self.loader_worker.finished.connect(self.on_files_loaded)
-        self.loader_worker.finished.connect(self.loader_thread.quit)
-        self.loader_worker.finished.connect(self.loader_worker.deleteLater)
 
-        self._threads.append(self.loader_thread)
-        self.loader_thread.start()
+        files = walk_limited(self.source_dir, max_depth)
+        self.all_files = files
+        self.filter_files()
+        self.populate_file_list()
+        self.setEnabled(True)
+        if self.files:
+            self.current_index = 0
+            self.set_current_file(0)
+
 
     def on_files_loaded(self, file_list):
         self.all_files = file_list
@@ -1490,7 +1792,7 @@ class FileViewer(QWidget):
 
         if self.files:
             self.current_index = 0
-            self.show_file()
+            self.set_current_file(0)
 
         self.loader_thread = None 
 
@@ -1521,7 +1823,7 @@ class FileViewer(QWidget):
             self.label.setPixmap(QPixmap())
             self.video_widget.hide()
         else:
-            self.show_file()
+            self.set_current_file(0)
             self.file_list.setFocus()
 
     def populate_file_list(self):
@@ -1532,9 +1834,11 @@ class FileViewer(QWidget):
         self.file_list.setCurrentRow(self.current_index)
 
     def update_window_title(self):
-        title = f"File Viewer | Source: {self.source_dir}"
+        title = f"EDGR - Enhanced Directory Gooning Register"
         if self.dest_dir:
             title += f" | Destination: {self.dest_dir}"
+        self.source_label.setText(f"📁 Source:\n{self.source_dir or 'Not Set'}")
+        self.dest_label.setText(f"📦 Destination:\n{self.dest_dir or 'Not Set'}")
         self.setWindowTitle(title)
 
     def file_list_clicked(self, item):
@@ -1570,92 +1874,110 @@ class FileViewer(QWidget):
             return
 
         full_path = self.files[self.current_index]
-        #self.path_label.setText(safe_relpath(full_path, APP_DIR))
-        _, ext = os.path.splitext(full_path.lower())
 
-        if self.movie:
-            self.movie.stop()
-            self.movie = None
+        # ✅ Skip if this file is already shown
+        if getattr(self, '_last_loaded_path', None) == full_path:
+            return
+        self._last_loaded_path = full_path
 
-        if self.vlc_player.is_playing():
-            self.vlc_player.stop()
+        # ✅ Try loading file
+        try:
+            _, ext = os.path.splitext(full_path.lower())
 
-        #self.playback_timer.stop()
-        self.playback_slider.setVisible(False)
-        self.label.clear()
-        self.label.setPixmap(QPixmap())
-        self.label.setText("")
+            # Clear display state
+            if self.vlc_player:
+                self.vlc_player.stop()
+            if self.movie:
+                self.movie.stop()
+                self.movie = None
 
-        display_area_width = self.display_panel.width()
-        display_area_height = self.display_panel.height() - 50
-
-        if ext in IMAGE_EXTENSIONS:
-            self.label.show()
+            self.label.clear()
+            self.label.setText("")
+            self.label.setPixmap(QPixmap())
             self.video_widget.hide()
+            self.label.show()
 
-            pixmap = QPixmap(full_path)
-            if pixmap.isNull():
-                self.label.setText(f"Cannot display: {os.path.basename(full_path)}")
+            if ext in IMAGE_EXTENSIONS:
+                self.show_image(full_path)
+            elif ext in VIDEO_EXTENSIONS:
+                self.show_video(full_path)
+            elif ext in GIF_EXTENSIONS:
+                self.show_gif(full_path)
             else:
-                scaled = pixmap.scaled(display_area_width, display_area_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.label.setPixmap(scaled)
+                self.label.setText("Unsupported file type")
 
-        elif ext in GIF_EXTENSIONS:
+        except Exception as e:
+            print(f"❌ Failed to load file: {full_path}\n{e}")
+            self.label.setText("⚠️ Error loading file")
             self.label.show()
             self.video_widget.hide()
 
-            self.movie = QMovie(full_path)
-            self.movie.setCacheMode(QMovie.CacheAll)
-            self.movie.setSpeed(100)
-            self.label.setMovie(self.movie)
-            self.movie.start()
+    def show_image(self, path):
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            raise ValueError("Image failed to load.")
+        scaled = pixmap.scaled(
+            self.display_panel.width(),
+            self.display_panel.height() - 50,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+        self.label.setPixmap(scaled)
 
-        elif ext in VIDEO_EXTENSIONS:
-            self.label.hide()
-            self.video_widget.show()
+    def show_video(self, path):
+        self.label.hide()
+        self.video_widget.show()
 
-            # Reset VLC player instance
-            self.vlc_player.stop()
-            self.vlc_player.release()
-            self.vlc_player = self.vlc_instance.media_player_new()
-            self.vlc_player.set_hwnd(int(self.video_widget.winId()))
+        self.vlc_player.stop()
+        self.vlc_player.release()
+        self.vlc_player = self.vlc_instance.media_player_new()
+        self.vlc_player.set_hwnd(int(self.video_widget.winId()))
 
-            # Create media and set it
-            media = self.vlc_instance.media_new(full_path)
-            media.add_option("input-repeat=65535")
-            self.vlc_player.set_media(media)
-            # Grab duration (in seconds)
-            self.video_duration = self.vlc_player.get_length() / 1000 or 1
+        media = self.vlc_instance.media_new(path)
+        media.add_option("input-repeat=65535")
+        self.vlc_player.set_media(media)
 
-            # Grab duration (in seconds)
-            QTimer.singleShot(1000, self.set_video_duration)
+        self.video_duration = 1  # Fallback
+        QTimer.singleShot(500, self.set_video_duration)
 
+        self.vlc_player.play()
+        self.playback_slider.setVisible(True)
+        self.playback_slider.setValue(0)
 
+    def show_gif(self, path):
+        self.movie = QMovie(path)
+        self.movie.setCacheMode(QMovie.CacheAll)
+        self.movie.setSpeed(100)
+        self.label.setMovie(self.movie)
+        self.movie.start()
 
-            # Start playback
-            self.simulated_offset = 0  # reset
-            self.play_timer.start()
-            self.vlc_player.play()
+    def set_current_file(self, index):
+        if not (0 <= index < len(self.files)):
+            return
 
-            # Enable slider updates
-            self.playback_slider.setVisible(True)
-            self.playback_slider.setValue(0)
-            
+        if hasattr(self, '_last_loaded_path'):
+            current_path = self.files[index]
+            if current_path == self._last_loaded_path:
+                return  # ✅ Skip redundant reload
 
-            #print("loop")
+        self.current_index = index
+        self._last_loaded_path = self.files[index]
 
-        else:
-            self.label.show()
-            self.video_widget.hide()
-            self.label.setText(f"File: {os.path.basename(full_path)}")
+        if self.file_list.currentRow() != index:
+            self.file_list.setCurrentRow(index)
 
-        self.apply_rotation()
+        self.show_file()
 
     def set_video_duration(self):
         duration = self.vlc_player.get_length() / 1000
         if duration > 0:
             self.video_duration = duration
-
+            # Reset zoom range to full if not in clip mode
+            if not self.clip_mode_active:
+                self.clip_zoom_start = 0
+                self.clip_zoom_end = self.video_duration
+            self.playback_slider.update()
+            
     def add_file_to_playlist(self):
         if not hasattr(self, 'dest_playlist') or not self.dest_playlist:
             if not os.path.isdir(self.playlist_dir): 
@@ -1762,6 +2084,7 @@ if __name__ == "__main__":
     }
     """
     app.setStyleSheet(dark_stylesheet)
+    
 
     viewer = FileViewer()
     viewer.show()
