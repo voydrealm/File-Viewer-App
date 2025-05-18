@@ -11,7 +11,7 @@ import subprocess
 from PyQt5.QtWidgets import (QInputDialog, QMenu, QAction, QMessageBox, QSizePolicy,
     QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QFileDialog, QMessageBox, QCheckBox, QSplitter, QComboBox, QFrame, QMenuBar, QMenu,
-    QSlider, QTreeView, QFileSystemModel, QMainWindow, QDialog, QDialogButtonBox, QStackedWidget)
+    QSlider, QTreeView, QFileSystemModel, QMainWindow, QDialog, QDialogButtonBox, QStackedWidget, QPushButton)
 from PyQt5.QtGui import QPixmap, QMovie, QTransform, QKeyEvent, QColor, QPainter, QIcon, QFont
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QEvent, QElapsedTimer, QDir
 
@@ -67,7 +67,9 @@ def encode_path(path):
     return base64.urlsafe_b64encode(path.encode("utf-8")).decode("ascii")
 
 def decode_path(encoded):
+    
     return base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8")
+
 
 from PyQt5.QtCore import QObject, pyqtSignal, QThread
 
@@ -751,6 +753,9 @@ class FileViewer(QMainWindow):
         self.fav_list.setStyleSheet("QListWidget { font-size: 9pt; }")
         self.fav_list.setFixedHeight(100)
         self.fav_list.itemClicked.connect(self.handle_favorite_selected)
+        self.fav_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.fav_list.customContextMenuRequested.connect(self.show_favorite_context_menu)
+
 
         fav_layout.addWidget(fav_label)
         fav_layout.addWidget(self.fav_list)
@@ -761,7 +766,14 @@ class FileViewer(QMainWindow):
         playlist_layout.setContentsMargins(0, 0, 0, 0)
         playlist_layout.setSpacing(0)
 
-        playlist_label = QLabel("🎵 Playlists")
+        playlist_header = QWidget()
+        playlist_header.setStyleSheet("background-color: #2a2a2a;")
+
+        playlist_header_layout = QHBoxLayout(playlist_header)
+        playlist_header_layout.setContentsMargins(0, 0, 0, 0)
+        playlist_header_layout.setSpacing(0)
+
+        playlist_label = QLabel("🎵 Playlists:")
         playlist_label.setStyleSheet("""
             QLabel {
                 background-color: #2a2a2a;
@@ -772,12 +784,42 @@ class FileViewer(QMainWindow):
             }
         """)
 
+        add_playlist_btn = QPushButton("+")
+        add_playlist_btn.setFixedSize(20, 20)
+        add_playlist_btn.setStyleSheet("""
+            QPushButton {
+                background-color: grey;
+                color: #ccc;
+                border: none;
+                font-size: 9pt;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                color: white;
+                background-color: #3a3a3a;
+                border-radius: 4px;
+            }
+        """)
+        #add_playlist_btn.setToolTip("Add New Playlist")
+        add_playlist_btn.clicked.connect(self.prompt_new_playlist)
+
+        playlist_header_layout.addWidget(playlist_label)
+        playlist_header_layout.addStretch()
+        playlist_header_layout.addWidget(add_playlist_btn)
+
+
+
+
+
         self.playlist_list = QListWidget()
         self.playlist_list.setStyleSheet("QListWidget { font-size: 9pt; }")
         self.playlist_list.setFixedHeight(100)
         self.playlist_list.itemClicked.connect(self.handle_playlist_selected)
+        self.playlist_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.playlist_list.customContextMenuRequested.connect(self.show_playlist_context_menu)
 
-        playlist_layout.addWidget(playlist_label)
+
+        playlist_layout.addWidget(playlist_header)
         playlist_layout.addWidget(self.playlist_list)
 
         # Add both panels to the info layout
@@ -846,27 +888,18 @@ class FileViewer(QMainWindow):
 
         # Playlist Panel
         self.playlist_panel = QFrame()
+        
         self.playlist_panel.setMinimumWidth(300)
         self.playlist_panel.setMaximumWidth(300)
+        
 
         self.playlist_layout = QVBoxLayout(self.playlist_panel)
 
         # Menu Bar for playlist panel
-        self.menu_bar = QMenuBar()
         self.controls_menu = QMenu("Options", self)
-        self.menu_bar.addMenu(self.controls_menu)
+        menu_bar.addMenu(self.controls_menu)
 
-        self.playlist_dropdown = QComboBox()
-        self.playlist_dropdown.view().setContextMenuPolicy(Qt.CustomContextMenu)
-        self.playlist_dropdown.view().customContextMenuRequested.connect(self.show_playlist_context_menu)
-
-        self.playlist_dropdown.addItem("All Files")
-        self.playlist_dropdown.addItem("+ New Playlist")
-        self.playlist_dropdown.currentIndexChanged.connect(self.playlist_dropdown_changed)
         
-        # Menu actions in order
-
-        self.menu_bar.setCornerWidget(self.playlist_dropdown, Qt.TopRightCorner)
 
         browse_source_action = self.controls_menu.addAction("Select Source Folder")
         browse_source_action.triggered.connect(self.browse_source)
@@ -886,9 +919,6 @@ class FileViewer(QMainWindow):
         scan_duplicates_action = self.controls_menu.addAction("Scan for Duplicates")
         scan_duplicates_action.triggered.connect(self.scan_for_duplicates)
 
-        #randomize_action = self.controls_menu.addAction("Randomize Playlist")
-        #randomize_action.triggered.connect(self.randomize_files)
-
         self.file_list = FileListWidget()
         self.file_list.setMinimumWidth(300)
         self.file_list.itemClicked.connect(self.file_list_clicked)
@@ -901,6 +931,21 @@ class FileViewer(QMainWindow):
         self.file_list.setUniformItemSizes(True)  # speeds up rendering
         self.file_list.setStyleSheet("QListWidget::item { padding-right: 10px; }")
         self.file_list.setTextElideMode(Qt.ElideRight)
+
+        self.search_bar = QLineEdit()
+        self.search_bar.setPlaceholderText("Search files...")
+        self.search_bar.setStyleSheet("""
+            QLineEdit {
+                padding: 4px 8px;
+                background-color: #1e1e1e;
+                color: #ccc;
+                border: 1px solid #444;
+                border-radius: 4px;
+                font-size: 9pt;
+            }
+        """)
+        self.search_bar.textChanged.connect(self.filter_file_list)
+
         
         self.sort_combo = QComboBox()
         self.sort_combo.addItems([
@@ -959,9 +1004,11 @@ class FileViewer(QMainWindow):
         checkboxes_layout.addWidget(self.vid_checkbox)
         checkboxes_layout.addWidget(self.gif_checkbox)
 
-        self.playlist_layout.setMenuBar(self.menu_bar)
+        #self.playlist_layout.setMenuBar(self.menu_bar)
         self.playlist_layout.addWidget(self.sort_combo)
+        self.playlist_layout.addWidget(self.search_bar)
         self.playlist_layout.addWidget(self.file_list)
+
 
         # Main Splitter
         self.splitter = QSplitter(Qt.Horizontal)
@@ -972,16 +1019,10 @@ class FileViewer(QMainWindow):
 
         self.main_layout.addWidget(self.splitter)
 
-
-
-        
-
-
         self.movie = None
         self.label.mousePressEvent = self.initial_folder_select
         self.load_config()
         self.load_all_files()
-        self.refresh_playlist_dropdown()
         self.load_preferences()
         
         self.file_list.setFocus()
@@ -1018,8 +1059,8 @@ class FileViewer(QMainWindow):
             os.makedirs(self.playlist_dir)
 
         for file in sorted(os.listdir(self.playlist_dir)):
-            if file.endswith("_playlist.json"):
-                name = file.replace("_playlist.json", "").replace("_", " ")
+            if file.endswith(".json"):
+                name = file.replace(".json", "").replace("_", " ")
                 self.playlist_list.addItem(name)
 
     def handle_favorite_selected(self, item):
@@ -1036,8 +1077,10 @@ class FileViewer(QMainWindow):
             self.update_window_title()
     
     def handle_playlist_selected(self, item):
+        print('selected')
         name = item.text()
         base = name.strip().lower().replace(" ", "_")
+        print(name, base)
         self.load_playlist(base)
 
     def format_time(self, seconds):
@@ -1067,6 +1110,7 @@ class FileViewer(QMainWindow):
         if action == set_source_action:
             self.source_dir = path
             self.save_config()
+            self.update_window_title()
             self.load_files_recursive()
             self.refresh_files()
             self.populate_file_explorer()
@@ -1077,6 +1121,7 @@ class FileViewer(QMainWindow):
             self.source_dir = path
             self.save_config()
             self.populate_file_explorer()
+            self.update_window_title()
             self.load_files_recursive()
             self.refresh_files()
 
@@ -1117,7 +1162,7 @@ class FileViewer(QMainWindow):
                 json.dump(encoded_list, f, indent=2)
 
             self.refresh_playlist_dropdown()
-            self.playlist_dropdown.setCurrentText("duplicates")
+            self.populate_playlist_list()
             self.load_playlist(playlist_name)
 
             self.show_toast(f"{len(duplicates)} duplicate files saved to playlist.")
@@ -1215,6 +1260,56 @@ class FileViewer(QMainWindow):
 
         self.populate_favorite_list()
 
+    def show_favorite_context_menu(self, position):
+        item = self.fav_list.itemAt(position)
+        if not item:
+            return
+
+        label = item.text()
+
+        try:
+            with open(FAVORITES_FILE, "r") as f:
+                favorites = json.load(f)
+        except Exception:
+            favorites = {}
+
+        folder = favorites.get(label)
+        if not folder:
+            return
+
+        menu = QMenu(self)
+        show_action = menu.addAction("Show in Folder")
+        remove_action = menu.addAction("Remove Favorite")
+
+        action = menu.exec_(self.fav_list.viewport().mapToGlobal(position))
+
+        if action == show_action:
+            if os.path.exists(folder):
+                try:
+                    if sys.platform == "win32":
+                        subprocess.run(["explorer", "/select,", os.path.normpath(folder)])
+                except Exception as e:
+                    QMessageBox.warning(self, "Error", f"Failed to open folder:\n{e}")
+            else:
+                QMessageBox.warning(self, "Not Found", "Folder does not exist.")
+
+        elif action == remove_action:
+            confirm = QMessageBox.question(
+                self,
+                "Remove Favorite",
+                f"Are you sure you want to remove '{label}' from favorites?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if confirm == QMessageBox.Yes:
+                try:
+                    favorites.pop(label, None)
+                    with open(FAVORITES_FILE, "w") as f:
+                        json.dump(favorites, f, indent=2)
+                    self.populate_favorite_list()
+                except Exception as e:
+                    QMessageBox.warning(self, "Remove Failed", f"Could not update favorites:\n{e}")
+
 
     def load_favorite_folder(self):
         if not os.path.exists(FAVORITES_FILE):
@@ -1237,6 +1332,7 @@ class FileViewer(QMainWindow):
                 self.source_dir = folder
                 self.populate_file_explorer()
                 self.load_files_recursive()
+                self.update_window_title()
                 self.refresh_files()
                 self.save_config()
                 if self.files:
@@ -1382,7 +1478,8 @@ class FileViewer(QMainWindow):
 
         removed = 0
         for abs_path in selected_files:
-            rel_path = safe_relpath(abs_path, APP_DIR)
+            rel_path = abs_path  # ✅ store full absolute path
+
             encoded = encode_path(rel_path)
             if encoded in playlist:
                 playlist.remove(encoded)
@@ -1407,16 +1504,18 @@ class FileViewer(QMainWindow):
                 os.makedirs(self.playlist_dir)
 
             playlists = [
-                f.replace("_playlist.json", "").replace("_", " ")
+                f.replace(".json", "").replace("_", " ")
                 for f in os.listdir(self.playlist_dir)
-                if f.endswith("_playlist.json")
+                if f.endswith(".json")
             ]
 
             if not playlists:
                 QMessageBox.information(self, "No Playlists", "You don't have any playlists to add to.")
                 return
 
-            selected, ok = QInputDialog.getItem(self, "Select Playlist", "Add selected files to which playlist:", playlists, 0, False)
+            selected, ok = QInputDialog.getItem(
+                self, "Select Playlist", "Add selected files to which playlist:", playlists, 0, False
+            )
             if not ok or not selected:
                 return
 
@@ -1433,8 +1532,7 @@ class FileViewer(QMainWindow):
 
         added = 0
         for abs_path in selected_files:
-            rel_path = safe_relpath(abs_path, APP_DIR)
-            encoded = encode_path(rel_path)
+            encoded = encode_path(os.path.abspath(abs_path))  # ✅ use absolute path
             if encoded not in playlist:
                 playlist.append(encoded)
                 added += 1
@@ -1443,6 +1541,7 @@ class FileViewer(QMainWindow):
             json.dump(playlist, f, indent=2)
 
         QMessageBox.information(self, "Files Added", f"{added} file(s) added to '{self.dest_playlist}' playlist.")
+
 
     def show_file_list_context_menu(self, position):
         selected_items = self.file_list.selectedItems()
@@ -1481,7 +1580,10 @@ class FileViewer(QMainWindow):
 
     def get_playlist_path(self, name_or_label):
         base = self.normalize_playlist_name(name_or_label)
-        return os.path.join(self.playlist_dir, f"{base}_playlist.json")
+        return os.path.join(self.playlist_dir, f"{base}.json")
+
+
+
 
     def normalize_playlist_name(self, name):
         return name.strip().lower().replace(" ", "_")
@@ -1513,6 +1615,18 @@ class FileViewer(QMainWindow):
             action: getattr(Qt, keyname, None)
             for action, keyname in raw.items()
         }
+
+    def filter_file_list(self, text):
+        text = text.lower()
+        self.file_list.clear()
+
+        for file in self.files:
+            name = os.path.basename(file)
+            if text in name.lower():
+                self.file_list.addItem(name)
+
+        self.file_list.setCurrentRow(0)
+
 
     def show_playlist_context_menu(self, position):
         index = self.playlist_dropdown.view().indexAt(position)
@@ -1552,7 +1666,7 @@ class FileViewer(QMainWindow):
                 try:
                     os.remove(playlist_path)
                     self.refresh_playlist_dropdown()
-                    self.playlist_dropdown.setCurrentText("All Files")
+                    self.populate_playlist_list()
                     self.load_all_files()
                 except Exception as e:
                     QMessageBox.warning(self, "Error", f"Failed to delete playlist:\n{str(e)}")
@@ -1571,6 +1685,7 @@ class FileViewer(QMainWindow):
         if self.source_dir and os.path.exists(self.source_dir):
             self.populate_file_explorer()
             self.load_files_recursive()
+            self.update_window_title()
             self.populate_file_list()
             if self.files:
                 self.current_index = 0
@@ -1590,26 +1705,6 @@ class FileViewer(QMainWindow):
             if playlist_filename:
                 self.load_playlist(playlist_filename)
 
-    def refresh_playlist_dropdown(self):
-        self.playlist_dropdown.blockSignals(True)
-        self.playlist_dropdown.clear()
-
-        self.dropdown_label_to_filename = {}
-
-        self.playlist_dropdown.addItem("All Files")
-
-        if not os.path.exists(self.playlist_dir):
-            os.makedirs(self.playlist_dir)
-
-        for file in sorted(os.listdir(self.playlist_dir)):
-            if file.endswith("_playlist.json"):
-                base = file.replace("_playlist.json", "")
-                label = base.replace("_", " ")
-                self.playlist_dropdown.addItem(label)
-                self.dropdown_label_to_filename[label] = base
-
-        self.playlist_dropdown.addItem("+ New Playlist")  
-        self.playlist_dropdown.blockSignals(False)
 
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open File")
@@ -1621,18 +1716,81 @@ class FileViewer(QMainWindow):
             viewer.label.setText("No file loaded")
             viewer.file_path = None
 
+    def show_playlist_context_menu(self, position):
+        item = self.playlist_list.itemAt(position)
+        if not item:
+            return
+
+        label = item.text()
+        base_name = self.normalize_playlist_name(label)
+        playlist_path = self.get_playlist_path(base_name)
+
+        menu = QMenu(self)
+        rename_action = menu.addAction("Rename Playlist")
+        delete_action = menu.addAction("Delete Playlist")
+
+        action = menu.exec_(self.playlist_list.viewport().mapToGlobal(position))
+
+        if action == rename_action:
+            new_name, ok = QInputDialog.getText(self, "Rename Playlist", "Enter new name:", text=label)
+            if ok and new_name.strip():
+                new_base = self.normalize_playlist_name(new_name)
+                new_path = self.get_playlist_path(new_base)
+
+                if os.path.exists(new_path):
+                    QMessageBox.warning(self, "Error", "A playlist with that name already exists.")
+                    return
+
+                try:
+                    os.rename(playlist_path, new_path)
+                    self.populate_playlist_list()
+                except Exception as e:
+                    QMessageBox.warning(self, "Rename Failed", f"Could not rename:\n{e}")
+
+        elif action == delete_action:
+            confirm = QMessageBox.question(
+                self,
+                "Delete Playlist",
+                f"Are you sure you want to delete '{label}'?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if confirm == QMessageBox.Yes:
+                try:
+                    os.remove(playlist_path)
+                    self.populate_playlist_list()
+                    if self.current_playlist == base_name:
+                        self.files = []
+                        self.populate_file_list()
+                        self.label.setText("Playlist deleted.")
+                except Exception as e:
+                    QMessageBox.warning(self, "Delete Failed", f"Could not delete:\n{e}")
+
 
     def prompt_new_playlist(self):
         name, ok = QInputDialog.getText(self, "New Playlist", "Enter playlist name:")
         if ok and name:
-            base = self.normalize_playlist_name(name)  
+            base = self.normalize_playlist_name(name)
             playlist_path = self.get_playlist_path(base)
 
             if not os.path.exists(playlist_path):
                 with open(playlist_path, 'w') as f:
                     json.dump([], f, indent=2)
 
-            self.refresh_playlist_dropdown()
+            # ✅ Refresh the sidebar playlist list
+            self.populate_playlist_list()
+
+            # ✅ Auto-select and highlight the new playlist
+            for i in range(self.playlist_list.count()):
+                item = self.playlist_list.item(i)
+                if item.text().lower() == name.strip().lower():
+                    self.playlist_list.setCurrentRow(i)
+                    break
+
+            # ✅ Optionally load it immediately (comment out if not desired)
+            self.load_playlist(base)
+
+            
             
 
     def load_playlist(self, name):
@@ -1648,14 +1806,17 @@ class FileViewer(QMainWindow):
         self.files = []
         for encoded in encoded_paths:
             try:
-                rel_path = decode_path(encoded)
-                abs_path = os.path.normpath(os.path.join(APP_DIR, rel_path))
-                if os.path.exists(abs_path):
-                    self.files.append(abs_path)
-            except Exception as e:
-                print(f"⚠️ Skipping invalid entry: {encoded} ({e})")
+                decoded = decode_path(encoded)
 
-        self.current_playlist = name  
+                if not os.path.isabs(decoded):
+                    decoded = os.path.abspath(os.path.join(APP_DIR, decoded))
+
+                if os.path.exists(decoded):
+                    self.files.append(decoded)
+            except Exception:
+                continue
+
+        self.current_playlist = name
         self.current_index = 0
 
         if not self.files:
@@ -1667,7 +1828,9 @@ class FileViewer(QMainWindow):
 
         self.populate_file_list()
         self.set_current_file(0)
+        self.show_file()
         self.file_list.setCurrentRow(0)
+
 
 
     def handle_explorer_double_click(self, index):
@@ -1680,6 +1843,7 @@ class FileViewer(QMainWindow):
                 self.fs_view.setRootIndex(self.fs_model.index(parent))
                 self.populate_file_explorer()
                 self.load_files_recursive()
+                self.update_window_title()
                 self.refresh_files()
             return
 
@@ -1688,6 +1852,7 @@ class FileViewer(QMainWindow):
             self.fs_view.setRootIndex(self.fs_model.index(path))
             self.populate_file_explorer()
             self.load_files_recursive()
+            self.update_window_title()
             self.refresh_files()
         elif os.path.isfile(path):
             self.files = [path]
@@ -1706,9 +1871,9 @@ class FileViewer(QMainWindow):
             os.makedirs(self.playlist_dir)
 
         playlists = [
-            f.replace("_playlist.json", "").replace("_", " ")
+            f.replace(".json", "").replace("_", " ")
             for f in os.listdir(self.playlist_dir)
-            if f.endswith("_playlist.json")
+            if f.endswith(".json")
         ]
 
         if not playlists:
@@ -1977,7 +2142,6 @@ class FileViewer(QMainWindow):
         if directory:
             self.playlist_dir = directory
             self.save_config()
-            self.refresh_playlist_dropdown()
             QMessageBox.information(self, "Playlist Directory Set", f"Now using:\n{directory}")
 
     def initial_folder_select(self, event):
@@ -1991,6 +2155,7 @@ class FileViewer(QMainWindow):
             self.save_config()
             self.populate_file_explorer()  # 👈 Add this
             self.load_files_recursive()
+            self.update_window_title()
             if not self.files:
                 self.label.setText("No files found in the source directory.")
             else:
@@ -2015,6 +2180,7 @@ class FileViewer(QMainWindow):
                 if self.source_dir and os.path.exists(self.source_dir):
                     self.populate_file_explorer()
                     self.load_files_recursive()
+                    self.update_window_title()
                     if self.files:
                         self.set_current_file(0)
 
@@ -2046,6 +2212,8 @@ class FileViewer(QMainWindow):
         if self.files:
             self.current_index = 0
             self.set_current_file(0)
+        if hasattr(self, "search_bar"):
+            self.search_bar.clear()
 
     def on_files_loaded(self, file_list):
         self.all_files = file_list
@@ -2198,6 +2366,15 @@ class FileViewer(QMainWindow):
 
         media = self.vlc_instance.media_new(path)
         media.add_option("input-repeat=65535")
+        media.add_option("audio-filter=normvol")
+        media.add_option("normvol-level=2")     # Default is 1; higher values = stronger normalization
+        media.add_option("normvol-method=2")    # 1 = peak, 2 = RMS
+        media.add_option("audio-filter=compressor")
+        media.add_option("compressor-ratio=9")     # Compression ratio (higher = more compression)
+        media.add_option("compressor-threshold=-1")  # Volume in dB at which compression kicks in
+        media.add_option("compressor-attack=1")   # How fast it reacts (ms)
+        media.add_option("compressor-release=200") # How fast it stops compressing (ms)
+        media.add_option("compressor-makeup-gain=6")  # Boost after compression
         self.vlc_player.set_media(media)
 
         self.video_duration = 1  # Fallback
@@ -2250,27 +2427,30 @@ class FileViewer(QMainWindow):
                 os.makedirs(self.playlist_dir)
 
             playlists = [
-                f.replace("_playlist.json", "").replace("_", " ")
+                f.replace(".json", "").replace("_", " ")
                 for f in os.listdir(self.playlist_dir)
-                if f.endswith("_playlist.json")
+                if f.endswith(".json")
             ]
 
             if not playlists:
                 QMessageBox.information(self, "No Playlists", "You don't have any playlists to add to.")
                 return
 
-            selected, ok = QInputDialog.getItem(self, "Select Playlist", "Add file to which playlist:", playlists, 0, False)
+            selected, ok = QInputDialog.getItem(
+                self, "Select Playlist", "Add file to which playlist:", playlists, 0, False
+            )
             if not ok or not selected:
                 return
 
-            self.dest_playlist = selected.strip().lower().replace(" ", "_")
+            self.dest_playlist = self.normalize_playlist_name(selected)
 
-        # Proceed to add file
-        rel_path = safe_relpath(self.files[self.current_index], APP_DIR)
-        encoded = encode_path(rel_path)
-        playlist_path = os.path.join(self.playlist_dir, f"{self.dest_playlist}_playlist.json")
+        playlist_path = self.get_playlist_path(self.dest_playlist)
 
-        # Safely load or initialize the playlist
+        # Use absolute path for encoding
+        abs_path = os.path.abspath(self.files[self.current_index])
+        encoded = encode_path(abs_path)
+
+        # Load or initialize the playlist
         if os.path.exists(playlist_path):
             with open(playlist_path, 'r') as f:
                 playlist = json.load(f)
@@ -2281,23 +2461,24 @@ class FileViewer(QMainWindow):
             playlist.append(encoded)
             with open(playlist_path, 'w') as f:
                 json.dump(playlist, f, indent=4)
-            self.show_toast(f"Added to playlist: {self.dest_playlist}")
+            self.show_toast(f"✅ Added to playlist: {self.dest_playlist}")
         else:
             self.show_toast("Already in playlist.")
+
 
     def show_toast(self, message, duration=2000):
         self.toast_label.setText(message)
         self.toast_label.adjustSize()
 
         # Position it near bottom-center
-        margin = 20
+        margin = 50
         width = self.toast_label.width()
         height = self.toast_label.height()
         x = (self.width() - width) // 2
         y = self.height() - height - margin
         self.toast_label.move(x, y)
         self.toast_label.setVisible(True)
-        #QTimer.singleShot(duration, lambda: self.toast_label.setVisible(False))
+        QTimer.singleShot(duration, lambda: self.toast_label.setVisible(False))
 
     def randomize_files(self):
         random.shuffle(self.files)
