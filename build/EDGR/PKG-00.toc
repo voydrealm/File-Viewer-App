@@ -45,7 +45,7 @@
   ('pyi_rth_pyqt5',
    'C:\\Users\\jacev\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python310\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_pyqt5.py',
    'PYSOURCE'),
-  ('EDGR', 'C:\\Users\\jacev\\Documents\\EDGR\\EDGR.py', 'PYSOURCE')],
+  ('EDGR', 'C:\\Users\\jacev\\Documents\\EDGR\\code\\EDGR.py', 'PYSOURCE')],
  'python310.dll',
  True,
  False,

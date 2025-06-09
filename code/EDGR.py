@@ -11,20 +11,27 @@ import subprocess
 from PyQt5.QtWidgets import (QInputDialog, QMenu, QAction, QMessageBox, QSizePolicy,
     QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QFileDialog, QMessageBox, QCheckBox, QSplitter, QComboBox, QFrame, QMenuBar, QMenu,
-    QSlider, QTreeView, QFileSystemModel, QMainWindow, QDialog, QDialogButtonBox, QStackedWidget, QPushButton)
-from PyQt5.QtGui import QPixmap, QMovie, QTransform, QKeyEvent, QColor, QPainter, QIcon, QFont
+    QSlider, QTreeView, QFileSystemModel, QMainWindow, QDialog, QDialogButtonBox, QStackedWidget, QPushButton, )
+from PyQt5.QtGui import QPixmap, QMovie, QTransform, QKeyEvent, QColor, QPainter, QIcon, QFont, QBrush
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QEvent, QElapsedTimer, QDir
 
+DEBUG = True
+
+def dprint(*args, **kwargs):
+        if DEBUG:
+            print(*args, **kwargs)
 
 
 DOCUMENTS_DIR = os.path.join(os.path.expanduser("~"), "Documents")
 ASSETS_DIR = os.path.join(DOCUMENTS_DIR, "assets")
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PREF_FILE = os.path.join(ASSETS_DIR, "preferences.json")
 PLAYLIST_DIR = os.path.join(ASSETS_DIR, "playlists")
 os.makedirs(PLAYLIST_DIR, exist_ok=True)
 CONFIG_FILE = os.path.join(ASSETS_DIR,"config.json")
 FAVORITES_FILE = os.path.join(ASSETS_DIR, "favorites.json")
+COLLECTION_PATH = os.path.join(PLAYLIST_DIR, "collection.json")
 
 IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.bmp']
 VIDEO_EXTENSIONS = ['.mp4', '.avi', '.mov', '.mkv']
@@ -54,7 +61,7 @@ except Exception as e:
     print("❌ Failed to load VLC DLLs:", e)
 
 import vlc
-vlc_instance = vlc.Instance(["--quiet"])
+#vlc_instance = vlc.Instance(["--quiet"])
 
 
 def safe_relpath(path, base):
@@ -71,7 +78,64 @@ def decode_path(encoded):
     return base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8")
 
 
+
+
 from PyQt5.QtCore import QObject, pyqtSignal, QThread
+
+from PyQt5.QtCore import QObject, QThread, pyqtSignal
+
+class FileListWorker(QObject):
+    finished = pyqtSignal(list)  # emits list of QListWidgetItem
+    def __init__(self, files, collection, app_dir):
+        super().__init__()
+        self.files = files
+        self.collection = collection
+        self.app_dir = app_dir
+
+    def run(self):
+        items = []
+        for path in self.files:
+            name = os.path.basename(path)
+            rel_path = safe_relpath(path, self.app_dir)
+
+            # Ensure file is in collection
+            if rel_path not in self.collection["files"]:
+                self.collection["files"][rel_path] = {
+                    "duration": None,
+                    "imported": False,
+                    "tags": []
+                }
+
+            meta = self.collection["files"].get(rel_path, {})
+            imported = meta.get("imported", False)
+            tags = meta.get("tags", [])
+            exists = os.path.exists(path)
+
+            # Label
+            prefix = ""
+            if not exists:
+                prefix = "⚠️ "
+            elif not imported:
+                prefix = "🕓 "
+            elif "favorite" in tags:
+                prefix = "⭐ "
+
+            label = f"{prefix}{name}"
+            item = QListWidgetItem(label)
+
+            # Style
+            if not exists:
+                item.setForeground(QBrush(QColor("#888")))
+            elif not imported:
+                item.setForeground(QBrush(QColor("#666")))
+            elif "favorite" in tags:
+                item.setForeground(QBrush(QColor("#ffd700")))
+
+            items.append(item)
+
+        dprint(f"📦 run(): emitting {len(items)} items")
+        self.finished.emit(items)
+
 
 class HandleSlider(QSlider):
     def __init__(self, viewer, *args, **kwargs):
@@ -96,13 +160,13 @@ class HandleSlider(QSlider):
 
 
     def format_time(self, seconds):
-        minutes = int(seconds) // 60
-        secs = int(seconds) % 60
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
         return f"{minutes:02}:{secs:02}"
 
 
     def update_smooth_position(self):
-        #print("[TIMER] updating")  # 👈 add this
+        #dprint("[TIMER] updating")  # 👈 add this
         if self.drag_mode:
             return
         speed = 0.25
@@ -162,7 +226,7 @@ class HandleSlider(QSlider):
                 painter.drawRect(x2 - 4, 4, 8, h - 8)
 
         # Draw red playhead
-        playhead_sec = self.current_pos * full_duration
+        playhead_sec = self.viewer.current_time_sec
         if zoom_start <= playhead_sec <= zoom_end:
             px = to_px(playhead_sec)
             painter.setBrush(QColor("red"))
@@ -233,8 +297,8 @@ class HandleSlider(QSlider):
         absolute_time = zoom_start + pos * zoom_range
         normalized = max(0, min(1, absolute_time / full_duration))
 
-        start = self.start_handle or 0
-        end = self.end_handle or 1
+        start = self.start_handle if self.start_handle is not None else 0
+        end = self.end_handle if self.end_handle is not None else 1
 
         if self.drag_mode == 'start':
             self.start_handle = min(normalized, self.end_handle - 0.01)
@@ -329,7 +393,7 @@ class DuplicateScanWorker(QObject):
                 key_map[key].append(path)
 
             except Exception as e:
-                print(f"⚠️ Error processing {path}: {e}")
+                dprint(f"⚠️ Error processing {path}: {e}")
 
         duplicates = [group for group in key_map.values() if len(group) > 1]
         flat_list = [item for group in duplicates for item in group]
@@ -571,14 +635,15 @@ class ViewerPanel(QWidget):
         self.file_path = path
         self.label.setText(f"Loaded:\n{os.path.basename(path)}")
 
-    
-
+##################################################################################################################
+##################################################################################################################
+##################################################################################################################
 class FileViewer(QMainWindow):
     def __init__(self):
         super().__init__()
 
          
-        
+        self._vlc_busy = False
         self._threads = []
         self.move_target_folder = None
         self.source_dir = ""
@@ -590,6 +655,13 @@ class FileViewer(QMainWindow):
         self.rotation_angle = 0  # 0, 90, 180, 270
         self.playlist_dir = PLAYLIST_DIR
         self.last_button_states = {}
+        self._vlc_binding_pending = False
+        self._last_video_path = None
+        self.current_time_sec = 0.0
+        self.collection = {"files": {}}
+        self.active_threads = set()
+
+
         
         self.play_timer = QElapsedTimer()
         self.play_start_time = 0
@@ -612,11 +684,8 @@ class FileViewer(QMainWindow):
         self.setCentralWidget(self.central_widget)
         self.outer_layout = QVBoxLayout(self.central_widget)
 
-    
-        #self.outer_layout = QVBoxLayout(self)
-        #self.outer_layout.setContentsMargins(0, 0, 0, 0)
-        #self.outer_layout.setSpacing(0)
-        #self.setLayout(self.outer_layout)
+
+
 
         self.main_layout = QHBoxLayout()
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -627,16 +696,12 @@ class FileViewer(QMainWindow):
 
         # File Menu
         file_menu = menu_bar.addMenu("File")
-
-        open_action = QAction("Open File...", self)
-        open_action.setShortcut("Ctrl+O")
-        open_action.triggered.connect(self.open_file)
-        #file_menu.addAction(open_action)
+        
 
         exit_action = QAction("Exit", self)
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
-        #file_menu.addAction(exit_action)
+
 
         preferences_action = QAction("Preferences", self)
         preferences_action.setShortcut("Ctrl+,")
@@ -647,10 +712,8 @@ class FileViewer(QMainWindow):
         # Edit Menu
         edit_menu = menu_bar.addMenu("Edit")
 
-        clear_action = QAction("Clear Viewers", self)
-        clear_action.setShortcut("Ctrl+Shift+C")
-        clear_action.triggered.connect(self.clear_all_viewers)
-        #edit_menu.addAction(clear_action)
+        
+
 
         self.toast_label = QLabel("", self)
         self.toast_label.setStyleSheet("""
@@ -680,21 +743,15 @@ class FileViewer(QMainWindow):
         self.source_label = QLabel("📁 Source: Not Set")
         self.dest_label = QLabel("📦 Destination: Not Set")
 
+
+        self.fs_view = QTreeView()
         self.fs_model = QFileSystemModel()
         self.fs_model.setRootPath(self.source_dir or QDir.homePath())
-        
         self.fs_model.setFilter(QDir.AllDirs | QDir.Files | QDir.NoDotAndDotDot)
         self.fs_model.setNameFilters(["*.png", "*.jpg", "*.mp4", "*.mov", "*.gif"])
         self.fs_model.setNameFilterDisables(False)
         self.fs_model.setFilter(QDir.AllDirs | QDir.NoDotAndDotDot | QDir.Drives)
-        
-        self.fs_list = QListWidget()
-        self.fs_list.setStyleSheet("QListWidget { font-size: 10pt; }")
-        self.fs_list.setSelectionMode(QListWidget.SingleSelection)
-        self.fs_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.fs_list.itemDoubleClicked.connect(self.handle_explorer_item_click)
-        self.fs_list.customContextMenuRequested.connect(self.show_explorer_context_menu)
-        self.fs_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.fs_view.setModel(self.fs_model)
 
         for lbl in [self.source_label, self.dest_label]:
             lbl.setWordWrap(True)
@@ -807,10 +864,6 @@ class FileViewer(QMainWindow):
         playlist_header_layout.addStretch()
         playlist_header_layout.addWidget(add_playlist_btn)
 
-
-
-
-
         self.playlist_list = QListWidget()
         self.playlist_list.setStyleSheet("QListWidget { font-size: 9pt; }")
         self.playlist_list.setFixedHeight(100)
@@ -826,6 +879,21 @@ class FileViewer(QMainWindow):
         self.info_layout.addWidget(self.fav_panel)
         self.info_layout.addWidget(self.playlist_panel)
         self.info_layout.addWidget(self.fs_panel, stretch=1)
+
+        # VLC player instance
+        vlc_args = [
+        '--no-xlib',
+        '--no-video-title-show',
+        '--no-snapshot-preview',
+        '--quiet',
+        '--verbose=0',
+        '--avcodec-hw=none',
+        
+        ]
+
+        self.vlc_instance = vlc.Instance(vlc_args)
+        self.vlc_player = None
+
         
         # Display Panel
         self.display_panel = QFrame()
@@ -878,20 +946,20 @@ class FileViewer(QMainWindow):
         self.vlc_player = self.vlc_instance.media_player_new()
 
         # Video frame for VLC
-        self.video_widget = QFrame()
-        self.video_widget.setFrameShape(QFrame.NoFrame)
+        self.video_widget = QWidget()
         self.video_widget.setStyleSheet("background-color: black;")
-        self.video_widget.hide()
+        self.video_widget.setAttribute(Qt.WA_NativeWindow, True)
+        #self.video_widget.hide()
 
         self.display_layout.addWidget(self.label)
         self.display_layout.addWidget(self.video_widget)
+        
 
         # Playlist Panel
         self.playlist_panel = QFrame()
         
         self.playlist_panel.setMinimumWidth(300)
         self.playlist_panel.setMaximumWidth(300)
-        
 
         self.playlist_layout = QVBoxLayout(self.playlist_panel)
 
@@ -899,7 +967,6 @@ class FileViewer(QMainWindow):
         self.controls_menu = QMenu("Options", self)
         menu_bar.addMenu(self.controls_menu)
 
-        
 
         browse_source_action = self.controls_menu.addAction("Select Source Folder")
         browse_source_action.triggered.connect(self.browse_source)
@@ -1019,21 +1086,30 @@ class FileViewer(QMainWindow):
 
         self.main_layout.addWidget(self.splitter)
 
+        
         self.movie = None
         self.label.mousePressEvent = self.initial_folder_select
-        self.load_config()
-        self.load_all_files()
-        self.load_preferences()
-        
         self.file_list.setFocus()
         self.current_playlist = None
         self.display_layout.addWidget(self.playback_slider)
         self.playback_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.target_pos = self.vlc_player.get_position()
+        if self.vlc_player and self.vlc_player.get_media():
+            self.target_pos = self.vlc_player.get_position()
+        else:
+            self.target_pos = 0.0
         app.setWindowIcon(QIcon(resource_path("rabbit_icon.ico")))
+        self.load_config()
+        self.load_all_files()
+        self.load_preferences()
+        
+        self.load_collection()
         self.populate_favorite_list()
         self.populate_playlist_list()
-        self.sort_files()
+        #self.sort_files()
+
+###################################################################################################################
+###################################################################################################################
+###################################################################################################################
 
         pygame.init()
         pygame.joystick.init()
@@ -1077,10 +1153,10 @@ class FileViewer(QMainWindow):
             self.update_window_title()
     
     def handle_playlist_selected(self, item):
-        print('selected')
+        dprint('Playlist Selected')
         name = item.text()
         base = name.strip().lower().replace(" ", "_")
-        print(name, base)
+        dprint(name, base)
         self.load_playlist(base)
 
     def format_time(self, seconds):
@@ -1114,16 +1190,6 @@ class FileViewer(QMainWindow):
             self.load_files_recursive()
             self.refresh_files()
             self.populate_file_explorer()
-
-        action = menu.exec_(self.fs_list.viewport().mapToGlobal(position))
-
-        if action == set_source_action:
-            self.source_dir = path
-            self.save_config()
-            self.populate_file_explorer()
-            self.update_window_title()
-            self.load_files_recursive()
-            self.refresh_files()
 
             self.fs_view.setRootIndex(self.fs_model.index(path))
 
@@ -1161,7 +1227,6 @@ class FileViewer(QMainWindow):
             with open(playlist_file, "w") as f:
                 json.dump(encoded_list, f, indent=2)
 
-            self.refresh_playlist_dropdown()
             self.populate_playlist_list()
             self.load_playlist(playlist_name)
 
@@ -1181,7 +1246,7 @@ class FileViewer(QMainWindow):
         pygame.event.pump()
         for i in range(joystick.get_numbuttons()):
             if joystick.get_button(i):
-                print(f"Pressed: {i}")
+                dprint(f"Pressed: {i}")
 
         prefs = self.preferences
         keymap = {
@@ -1219,7 +1284,7 @@ class FileViewer(QMainWindow):
                 if os.path.isdir(full_path):
                     self.fs_list.addItem(name)
         except Exception as e:
-            print(f"⚠️ Error reading directory: {e}")
+            dprint(f"⚠️ Error reading directory: {e}")
 
     def handle_explorer_item_click(self, item):
         name = item.text()
@@ -1350,6 +1415,9 @@ class FileViewer(QMainWindow):
 
             if duration_ms <= 0:
                 return
+            if not self.vlc_player.get_media():
+                return
+
 
             current_time_sec = current_time_ms / 1000
             duration_sec = duration_ms / 1000
@@ -1362,7 +1430,7 @@ class FileViewer(QMainWindow):
                 self.clip_end_sec = end_handle * duration_sec
 
                 if current_time_sec >= self.clip_end_sec:
-                    print(f"🔁 Looping: {current_time_sec:.2f}s → {self.clip_start_sec:.2f}s")
+                    dprint(f"🔁 Looping: {current_time_sec:.2f}s → {self.clip_start_sec:.2f}s")
                     self.vlc_player.set_time(int(self.clip_start_sec * 1000))
                     self.playback_slider.current_pos = start_handle  # 🔴 jump red dot
                     self.playback_slider.update()
@@ -1376,30 +1444,87 @@ class FileViewer(QMainWindow):
         dialog = PreferencesDialog(self)
         if dialog.exec_() == QDialog.Accepted:
             selected_sort = dialog.sort_combo.currentText()
-            print(f"✅ Preferences saved. Default sort: {selected_sort}")
+            dprint(f"✅ Preferences saved. Default sort: {selected_sort}")
             # You could apply this sort mode or store in config here
 
 
     def update_vlc_position(self):
-        if self.vlc_player.is_playing() and not self.playback_slider.drag_mode:
-            if getattr(self, '_skip_next_slider_update', False):
+        try:
+            if not self.vlc_player or not self.vlc_player.get_media():
                 return
-            self.playback_slider.target_pos = self.vlc_player.get_position()
-            self.update_playback_slider()
+
+            if self.vlc_player.is_playing() and not self.playback_slider.drag_mode:
+                self.playback_slider.target_pos = self.vlc_player.get_position()
+                self.update_playback_slider()
+
+            current_ms = self.vlc_player.get_time()
+            if current_ms < 0:
+                return
+
+            current_sec = current_ms / 1000.0
+            self.current_time_sec = current_sec
+
+            if hasattr(self, 'time_label'):
+                self.time_label.setText(self.format_time(current_sec))
+
+            # ✅ Debug playback state
+            if not hasattr(self, '_last_debug_time') or time.time() - self._last_debug_time > 1:
+                #print(f"🕒 VLC time: {self.format_time(current_sec)} | Position: {self.vlc_player.get_position():.3f}")
+                self._last_debug_time = time.time()
+
+        except Exception as e:
+            dprint("⚠️ update_vlc_position crash:", e)
 
 
-        
+    def print_current_file_info(self):
+        if not self.files or not (0 <= self.current_index < len(self.files)):
+            dprint("⚠️ No file selected.")
+            return
+
+        path = self.files[self.current_index]
+        name = os.path.basename(path)
+
+        time_str = ""
+        if hasattr(self, "vlc_player") and self.vlc_player:
+            try:
+                time_ms = self.vlc_player.get_time()
+                dur_ms = self.vlc_player.get_length()
+                if time_ms >= 0 and dur_ms > 0:
+                    cur = self.format_time(time_ms / 1000)
+                    dur = self.format_time(dur_ms / 1000)
+                    time_str = f" | {cur} / {dur}"
+            except:
+                pass
+
+        dprint(f"[{self.current_index}] {name} — {path}{time_str}")
+
+
+
+
 
     def pause_video_for_scrub(self):
         if self.vlc_player.is_playing():
             self.vlc_player.pause()
 
     def scrub_video(self):
-        duration = self.vlc_player.get_length()
-        if duration > 0:
-            new_time = int((self.playback_slider.value() / 1000) * duration)
-            self.vlc_player.set_time(new_time)
-            self.vlc_player.play()
+        try:
+            if not self.vlc_player or not self.vlc_player.get_media():
+                return
+
+            duration = self.vlc_player.get_length()
+            if duration > 0:
+                new_time = int((self.playback_slider.value() / 1000) * duration)
+                self.vlc_player.set_time(new_time)
+
+                state = self.vlc_player.get_state()
+                if state in [vlc.State.Stopped, vlc.State.Paused]:
+                    self.vlc_player.play()
+                    dprint("▶️ VLC .play() called")
+
+        except Exception as e:
+            dprint("⚠️ scrub_video crash:", e)
+
+
 
     def toggle_fullscreen(self):
         if self.fullscreen:
@@ -1457,7 +1582,7 @@ class FileViewer(QMainWindow):
             return
 
         playlist_file = self.get_playlist_path(self.current_playlist)
-        print(playlist_file)
+        dprint(playlist_file)
         if not os.path.exists(playlist_file):
             QMessageBox.warning(self, "Error", "Playlist file not found.")
             return
@@ -1665,7 +1790,6 @@ class FileViewer(QMainWindow):
             if confirm == QMessageBox.Yes:
                 try:
                     os.remove(playlist_path)
-                    self.refresh_playlist_dropdown()
                     self.populate_playlist_list()
                     self.load_all_files()
                 except Exception as e:
@@ -1691,30 +1815,75 @@ class FileViewer(QMainWindow):
                 self.current_index = 0
                 self.set_current_file(0)
 
-    def playlist_dropdown_changed(self, index):
-        selected = self.playlist_dropdown.itemText(index)
+    def get_video_duration(self, full_path):
+        try:
+            media = self.vlc_instance.media_new(full_path)
+            media.parse_with_options(vlc.MediaParseFlag.local, timeout=2 * 1000)  # wait max 2s
+            duration_ms = media.get_duration()
+            if duration_ms > 0:
+                return duration_ms / 1000.0
+        except Exception as e:
+            dprint(f"❌ Failed to preload duration: {e}")
+        return 0.0
 
-        if selected == "All Files":
-            self.load_all_files()
+    def load_collection(self):
+        os.makedirs(ASSETS_DIR, exist_ok=True)
 
-        elif selected == "+ New Playlist":
-            self.prompt_new_playlist()
-
+        if os.path.exists(COLLECTION_PATH):
+            try:
+                with open(COLLECTION_PATH, "r") as f:
+                    self.collection = json.load(f)
+                    dprint("📂 collection.json loaded")
+            except Exception as e:
+                dprint(f"❌ Failed to load collection: {e}")
+                self.collection = {"files": {}}
         else:
-            playlist_filename = self.dropdown_label_to_filename.get(selected)
-            if playlist_filename:
-                self.load_playlist(playlist_filename)
+            dprint("📁 Creating new collection.json")
+            self.collection = {"files": {}}
+            self.save_collection()
 
 
-    def open_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open File")
-        if path and self.viewers:
-            self.viewers[0].load_file(path)
+    def save_collection(self):
+        try:
+            with open(COLLECTION_PATH, "w") as f:
+                json.dump(self.collection, f, indent=2)
+            dprint("💾 collection.json saved")
+        except Exception as e:
+            dprint(f"❌ Failed to save collection: {e}")
 
-    def clear_all_viewers(self):
-        for viewer in self.viewers:
-            viewer.label.setText("No file loaded")
-            viewer.file_path = None
+
+    def register_file(self, path):
+        rel = safe_relpath(path, APP_DIR)
+        if rel in self.collection["files"]:
+            dprint ("File is in collection: Skipping registry")
+            return  
+        dprint(f"📥 Registering new file")
+        self.collection["files"][rel] = {
+            "duration": None,
+            "imported": False,
+            "tags": []
+        }
+        self.save_collection()
+            
+    def import_file_metadata(self, path):
+        rel = safe_relpath(path, APP_DIR)
+
+        # Ensure the file is in the registry
+        if rel not in self.collection["files"]:
+            self.register_file(path)
+
+        _, ext = os.path.splitext(path.lower())
+        if ext not in VIDEO_EXTENSIONS:
+            dprint(f"⏭️ Skipping metadata import (not a video): {rel}")
+            return
+
+        duration = self.get_video_duration(path)
+        self.collection["files"][rel]["duration"] = duration
+        self.collection["files"][rel]["imported"] = True
+        
+        self.refresh_file_list_item(path)  # 👈 update the UI item here
+
+
 
     def show_playlist_context_menu(self, position):
         item = self.playlist_list.itemAt(position)
@@ -1950,6 +2119,8 @@ class FileViewer(QMainWindow):
                 self.vlc_player.pause()
             else:
                 self.vlc_player.play()
+                dprint("▶️ VLC .play() called")
+
             return  # 👈 prevent spacebar from triggering other widgets (like list scrolling)f
 
 
@@ -2036,7 +2207,7 @@ class FileViewer(QMainWindow):
                 .output(output_path, vcodec='libx264', acodec='aac', preset='medium') \
                 .run(overwrite_output=True)
 
-            print(f"✅ Clip saved: {output_path}")
+            dprint(f"✅ Clip saved: {output_path}")
             self.show_toast(f"Clip saved as: {os.path.basename(output_path)}")
 
             # Insert new clip into file list
@@ -2063,10 +2234,10 @@ class FileViewer(QMainWindow):
                     playlist.append(encoded)
                     with open(playlist_file, "w") as f:
                         json.dump(playlist, f, indent=2)
-                    print(f"✅ Added to playlist: {playlist_name}")
+                    dprint(f"✅ Added to playlist: {playlist_name}")
 
         except ffmpeg.Error as e:
-            print("❌ ffmpeg error:", e)
+            dprint("❌ ffmpeg error:", e)
             self.show_toast("Error saving clip")
 
 
@@ -2088,17 +2259,20 @@ class FileViewer(QMainWindow):
 
         if self.vlc_player:
             self.vlc_player.stop()
+            QApplication.processEvents()
+            #time.sleep(0.05)
             self.vlc_player.set_media(None)
-            self.vlc_player.release()
+            del self.vlc_player
             self.vlc_player = self.vlc_instance.media_player_new()
             self.vlc_player.set_hwnd(int(self.video_widget.winId()))
+
 
         if self.movie:
             self.movie.stop()
             self.movie = None
 
         QApplication.processEvents()
-        time.sleep(0.1)
+        #time.sleep(0.1)
 
         try:
             shutil.move(source_path, dest_path)
@@ -2192,6 +2366,7 @@ class FileViewer(QMainWindow):
                 all_files.append(full_path)
         self.all_files = all_files
         self.filter_files()
+        
 
 
         def walk_limited(path, max_depth):
@@ -2257,12 +2432,100 @@ class FileViewer(QMainWindow):
             self.set_current_file(0)
             self.file_list.setFocus()
 
-    def populate_file_list(self):
-        self.file_list.clear()
-        for file in self.files:
-            item = QListWidgetItem(os.path.basename(file))
+
+    def on_file_list_ready(self, items):
+        dprint("🎯 on_file_list_ready() triggered")
+        for item in items:
             self.file_list.addItem(item)
         self.file_list.setCurrentRow(self.current_index)
+        self.save_collection()  # optional: save once after batch registration
+        self.set_current_file(0)
+
+    def populate_file_list(self):
+        self.file_list.clear()
+
+        for path in self.files:
+            name = os.path.basename(path)
+            rel_path = safe_relpath(path, APP_DIR)
+            
+
+            # Register if missing
+            #if rel_path not in self.collection["files"]:
+             #   self.register_file(path)
+                #self.save_collection()
+                
+
+            # Get metadata
+            meta = self.collection["files"].get(rel_path, {})
+            imported = meta.get("imported", False)
+            tags = meta.get("tags", [])
+            exists = os.path.exists(path)
+
+            # # Label
+            prefix = ""
+            # if not exists:
+            #     prefix = "⚠️ "
+            # elif not imported:
+            #     prefix = "🕓 "
+            # elif "favorite" in tags:
+            #     prefix = "⭐ "
+
+            label = f"{prefix}{name}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, rel_path)
+                
+            # Style
+            if  exists:
+                item.setForeground(QBrush(QColor("#888")))
+            elif imported:
+                item.setForeground(QBrush(QColor("#666")))
+            elif "favorite" in tags:
+                item.setForeground(QBrush(QColor("#ffd700")))
+
+            self.file_list.addItem(item)
+
+
+        # ✅ Make sure first file is loaded
+        if self.files:
+            self.current_index = 0
+            self.set_current_file(0)
+
+    def refresh_file_list_item(self, path):
+        rel_path = safe_relpath(path, APP_DIR)
+        name = os.path.basename(path)
+
+        # Find matching item in the list
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            if item.data(Qt.UserRole) == rel_path:
+                meta = self.collection["files"].get(rel_path, {})
+                imported = meta.get("imported", False)
+                tags = meta.get("tags", [])
+                exists = os.path.exists(path)
+
+                # Determine label prefix
+                prefix = ""
+                if not exists:
+                    prefix = "⚠️ "
+                elif not imported:
+                    prefix = "🕓 "
+                elif "favorite" in tags:
+                    prefix = "⭐ "
+
+                # Update label and style
+                item.setText(f"{prefix}{name}")
+
+                if not exists:
+                    item.setForeground(QBrush(QColor("#888")))
+                elif not imported:
+                    item.setForeground(QBrush(QColor("#666")))
+                elif "favorite" in tags:
+                    item.setForeground(QBrush(QColor("#ffd700")))
+                else:
+                    item.setForeground(QBrush(QColor("#fff")))
+
+                break
+
 
     def update_window_title(self):
         title = f"EDGR - Enhanced Directory Gooning Register"
@@ -2298,24 +2561,65 @@ class FileViewer(QMainWindow):
         self.populate_file_list()
         self.file_list.setFocus()
 
+    def safe_stop_and_release_vlc(self):
+        if self.vlc_player:
+            try:
+                self.vlc_player.stop()
+                QApplication.processEvents()
+
+                timer = QElapsedTimer()
+                timer.start()
+                while True:
+                    try:
+                        state = self.vlc_player.get_state()
+                    except:
+                        break
+                    if state in [vlc.State.NothingSpecial, vlc.State.Stopped] or timer.elapsed() > 1000:
+                        break
+                    QApplication.processEvents()
+                    #time.sleep(0.05)
+
+                self.vlc_player.set_media(None)
+                dprint("🛑 Releasing old VLC player")
+                self.vlc_player.release()
+                self.vlc_player = None
+                self._last_video_path = None  # ✅ allow reloading same file later
+
+            except Exception as e:
+                dprint("⚠️ VLC cleanup error:", e)
+
+
+
     def show_file(self):
-        if not self.files:
+        if self._vlc_busy:
+            dprint("⏳ VLC busy -- skipping show_file")
             return
+        if not self.files or getattr(self, "_vlc_busy", False):
+            return
+
+        self._vlc_busy = True
 
         full_path = self.files[self.current_index]
+        #self.register_file(full_path)
 
-        # ✅ Skip if this file is already shown
+
         if getattr(self, '_last_loaded_path', None) == full_path:
+            self._vlc_busy = False
             return
+
         self._last_loaded_path = full_path
 
-        # ✅ Try loading file
         try:
             _, ext = os.path.splitext(full_path.lower())
 
-            # Clear display state
-            if self.vlc_player:
-                self.vlc_player.stop()
+            try:
+                self.poll_timer.blockSignals(True)
+                self.poll_timer.timeout.disconnect(self.update_vlc_position)
+            except:
+                pass
+
+            self.safe_stop_and_release_vlc()
+
             if self.movie:
                 self.movie.stop()
                 self.movie = None
@@ -2325,25 +2629,47 @@ class FileViewer(QMainWindow):
             self.label.setPixmap(QPixmap())
             self.video_widget.hide()
             self.label.show()
+            #self.print_current_file_info()
+            
+
 
             if ext in IMAGE_EXTENSIONS:
                 self.show_image(full_path)
                 self.playback_slider.setVisible(False)
 
             elif ext in VIDEO_EXTENSIONS:
+                #self.import_file_metadata(full_path)
                 self.show_video(full_path)
+
             elif ext in GIF_EXTENSIONS:
                 self.show_gif(full_path)
+
             else:
                 self.label.setText("Unsupported file type")
 
         except Exception as e:
-            print(f"❌ Failed to load file: {full_path}\n{e}")
+            dprint(f"❌ Failed to load file: {full_path}\n{e}")
             self.label.setText("⚠️ Error loading file")
             self.label.show()
             self.video_widget.hide()
 
+        finally:
+            self.poll_timer.blockSignals(False)
+            self._vlc_busy = False
+
+            #self.preload_next_file_metadata()
+
+            if hasattr(self, '_last_requested_index') and self._last_requested_index != self.current_index:
+                idx = self._last_requested_index
+                self._last_requested_index = None
+                self.current_index = idx
+                QTimer.singleShot(0, self.show_file)
+
+
     def show_image(self, path):
+        self.video_widget.hide()
+        self.label.show()
+
         pixmap = QPixmap(path)
         if pixmap.isNull():
             raise ValueError("Image failed to load.")
@@ -2355,36 +2681,72 @@ class FileViewer(QMainWindow):
         )
         self.label.setPixmap(scaled)
 
-    def show_video(self, path):
-        self.label.hide()
+
+
+    def show_video(self, full_path):
+        if self._vlc_binding_pending:
+            d("⏳ VLC bind already in progress, skipping duplicate call.")
+            return
+        self._vlc_binding_pending = True
+
+        if full_path == getattr(self, "_last_video_path", None):
+            print("🔁 Duplicate show_video call skipped (same file)")
+            return
+        self._last_video_path = full_path
+
+        def bind_and_play():
+            try:
+                self.vlc_player = self.vlc_instance.media_player_new()
+                win_id = int(self.video_widget.winId())
+                dprint(f"🎯 Binding VLC to HWND: {win_id}")
+                self.vlc_player.set_hwnd(win_id)
+
+                media = self.vlc_instance.media_new(full_path)
+                media.add_option("audio-filter=compressor,normvol")
+                media.add_option("compressor-ratio=10")
+                media.add_option("compressor-threshold=-30")
+                media.add_option("compressor-attack=10")
+                media.add_option("compressor-release=200")
+                media.add_option("compressor-makeup-gain=15")
+                media.add_option("normvol-level=2")
+
+                self.vlc_player.set_media(media)
+                self.vlc_player.play()
+                dprint("▶️ VLC .play() called")
+
+
+                try:
+                    self.poll_timer.timeout.disconnect()
+                except:
+                    pass
+                self.poll_timer.timeout.connect(self.update_vlc_position)
+
+                self.playback_slider.setVisible(True)
+                self.playback_slider.setValue(0)
+                self.video_duration = 1
+                QTimer.singleShot(500, self.set_video_duration)
+
+            except Exception as e:
+                dprint("⚠️ show_video crash:", e)
+                self.label.setText("⚠️ Error playing video")
+                self.label.show()
+                self.video_widget.hide()
+            finally:
+                self._vlc_binding_pending = False
+
+        self.video_widget.setAttribute(Qt.WA_NativeWindow, True)
         self.video_widget.show()
+        self.label.hide()
+        QApplication.processEvents()
+        self.video_widget.winId()
+        QTimer.singleShot(0, bind_and_play)
 
-        self.vlc_player.stop()
-        self.vlc_player.release()
-        self.vlc_player = self.vlc_instance.media_player_new()
-        self.vlc_player.set_hwnd(int(self.video_widget.winId()))
 
-        media = self.vlc_instance.media_new(path)
-        media.add_option("input-repeat=65535")
-        media.add_option("audio-filter=normvol")
-        media.add_option("normvol-level=2")     # Default is 1; higher values = stronger normalization
-        media.add_option("normvol-method=2")    # 1 = peak, 2 = RMS
-        media.add_option("audio-filter=compressor")
-        media.add_option("compressor-ratio=9")     # Compression ratio (higher = more compression)
-        media.add_option("compressor-threshold=-1")  # Volume in dB at which compression kicks in
-        media.add_option("compressor-attack=1")   # How fast it reacts (ms)
-        media.add_option("compressor-release=200") # How fast it stops compressing (ms)
-        media.add_option("compressor-makeup-gain=6")  # Boost after compression
-        self.vlc_player.set_media(media)
-
-        self.video_duration = 1  # Fallback
-        QTimer.singleShot(500, self.set_video_duration)
-
-        self.vlc_player.play()
-        self.playback_slider.setVisible(True)
-        self.playback_slider.setValue(0)
 
     def show_gif(self, path):
+        self.video_widget.hide()
+        self.label.show()
+
         self.movie = QMovie(path)
         self.movie.setCacheMode(QMovie.CacheAll)
         self.movie.setSpeed(100)
@@ -2408,15 +2770,45 @@ class FileViewer(QMainWindow):
 
         self.show_file()
 
+    def preload_next_file_metadata(self):
+        if self.current_index + 1 >= len(self.files):
+            return
+
+        next_path = self.files[self.current_index + 1]
+        rel = safe_relpath(next_path, APP_DIR)
+
+        if self.collection["files"].get(rel, {}).get("imported", False):
+            dprint(f"✅ Next file already imported: {rel}")
+            return
+
+        dprint(f"📦 Preloading metadata for next file: {os.path.basename(next_path)}")
+        #self.import_file_metadata(next_path)
+
+
     def set_video_duration(self):
-        duration = self.vlc_player.get_length() / 1000
-        if duration > 0:
+        if not self.vlc_player:
+            dprint("⏱️ Skipping set_video_duration: vlc_player is None")
+            return
+
+        try:
+            duration_ms = self.vlc_player.get_length()
+            if duration_ms <= 0:
+                dprint("⏱️ VLC returned invalid duration.")
+                return
+
+            duration = duration_ms / 1000
             self.video_duration = duration
-            # Reset zoom range to full if not in clip mode
+
             if not self.clip_mode_active:
                 self.clip_zoom_start = 0
                 self.clip_zoom_end = self.video_duration
+
             self.playback_slider.update()
+            dprint(f"⏱️ Video duration set to {duration:.2f} seconds")
+
+        except Exception as e:
+            dprint(f"⚠️ Failed to set video duration: {e}")
+
 
     def add_file_to_playlist(self):
         if not hasattr(self, 'dest_playlist') or not self.dest_playlist:
@@ -2491,6 +2883,8 @@ class FileViewer(QMainWindow):
         if 0 <= row < len(self.files):
             self.current_index = row
             self.show_file()
+
+    
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
